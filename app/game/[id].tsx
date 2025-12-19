@@ -14,7 +14,9 @@ import {
 } from "firebase/firestore";
 import React, { useEffect, useRef, useState } from "react";
 import {
+  Alert,
   Animated,
+  Clipboard,
   FlatList,
   Modal,
   StyleSheet,
@@ -51,7 +53,7 @@ interface Player {
 }
 
 export default function GameRoom() {
-  const { id, rounds } = useLocalSearchParams(); // Receive 'rounds' param
+  const { id, rounds } = useLocalSearchParams();
   const router = useRouter();
   const roomId = Array.isArray(id) ? id[0] : id;
   const currentUser = auth.currentUser;
@@ -69,8 +71,8 @@ export default function GameRoom() {
 
   // Round Tracking
   const [currentRound, setCurrentRound] = useState(1);
-  const [totalRounds, setTotalRounds] = useState(Number(rounds) || 2); // Default to 2 if not passed
-  const [turnIndex, setTurnIndex] = useState(0); // Track whose turn it is in the player list
+  const [totalRounds, setTotalRounds] = useState(Number(rounds) || 2);
+  const [turnIndex, setTurnIndex] = useState(0);
 
   const [players, setPlayers] = useState<Player[]>([]);
   const [showSidebar, setShowSidebar] = useState(false);
@@ -97,7 +99,6 @@ export default function GameRoom() {
     const playerRef = doc(db, "rooms", roomId, "players", currentUser.uid);
 
     const joinRoom = async () => {
-      // Initialize room with rounds info if I'm creating it
       await setDoc(
         roomRef,
         {
@@ -138,7 +139,6 @@ export default function GameRoom() {
         setGuessedPlayers(data.guessedPlayers || []);
         setCanvasColor(data.canvasColor || "#FFFFFF");
 
-        // Sync Rounds info
         if (data.totalRounds) setTotalRounds(data.totalRounds);
         if (data.currentRound) setCurrentRound(data.currentRound);
         if (data.turnIndex !== undefined) setTurnIndex(data.turnIndex);
@@ -162,7 +162,7 @@ export default function GameRoom() {
             ...doc.data(),
           } as Player)
       );
-      activePlayers.sort((a, b) => a.id.localeCompare(b.id)); // Consistent Sort
+      activePlayers.sort((a, b) => a.id.localeCompare(b.id));
       setPlayers(activePlayers);
 
       snapshot.docChanges().forEach((change) => {
@@ -180,8 +180,7 @@ export default function GameRoom() {
             });
 
             if (leftPlayer.id === drawerIdRef.current) {
-              // Drawer left, force next turn logic
-              handleTimeUp(activePlayers); // Pass current active players to avoid stale state
+              handleTimeUp(activePlayers);
             }
           }
         }
@@ -229,7 +228,6 @@ export default function GameRoom() {
     return () => clearInterval(interval);
   }, [roundEndTime, isDrawer, gameState, guessedPlayers, players]);
 
-  // Podium Animation
   useEffect(() => {
     if (gameState === "GAME_OVER") {
       Animated.sequence([
@@ -237,17 +235,17 @@ export default function GameRoom() {
           toValue: 1,
           friction: 5,
           useNativeDriver: true,
-        }), // 2nd Place
+        }),
         Animated.spring(scaleAnim1, {
           toValue: 1,
           friction: 5,
           useNativeDriver: true,
-        }), // 1st Place
+        }),
         Animated.spring(scaleAnim3, {
           toValue: 1,
           friction: 5,
           useNativeDriver: true,
-        }), // 3rd Place
+        }),
       ]).start();
     }
   }, [gameState]);
@@ -255,12 +253,10 @@ export default function GameRoom() {
   // 3. Actions
   const startGame = async () => {
     if (players.length < 1) return;
-    // Reset game state
     const roomRef = doc(db, "rooms", roomId);
     await updateDoc(roomRef, {
       currentRound: 1,
       turnIndex: 0,
-      // Reset scores if needed, but keeping persistence for now is fine or clear them here
     });
     startTurn(players[0].id, 0, 1);
   };
@@ -307,22 +303,18 @@ export default function GameRoom() {
   };
 
   const handleTimeUp = (currentPlayersList = players) => {
-    // Logic to determine next turn or game over
     let nextIndex = turnIndex + 1;
     let nextRound = currentRound;
 
-    // Check if round is finished
     if (nextIndex >= currentPlayersList.length) {
       nextIndex = 0;
       nextRound++;
     }
 
     if (nextRound > totalRounds) {
-      // Game Over!
       const roomRef = doc(db, "rooms", roomId);
       updateDoc(roomRef, { gameState: "GAME_OVER" });
     } else {
-      // Next Turn
       startTurn(currentPlayersList[nextIndex].id, nextIndex, nextRound);
     }
   };
@@ -345,6 +337,11 @@ export default function GameRoom() {
       } catch (e) {}
     }
     router.back();
+  };
+
+  const copyRoomId = () => {
+    Clipboard.setString(roomId);
+    Alert.alert("Copied!", "Room ID copied to clipboard.");
   };
 
   const getDisplayWord = () => {
@@ -371,7 +368,6 @@ export default function GameRoom() {
       <View style={styles.podiumContainer}>
         <Text style={styles.podiumTitle}>🏆 Final Results 🏆</Text>
         <View style={styles.podiumStage}>
-          {/* 2nd Place */}
           {second && (
             <Animated.View
               style={[
@@ -393,7 +389,6 @@ export default function GameRoom() {
               </View>
             </Animated.View>
           )}
-          {/* 1st Place */}
           {winner && (
             <Animated.View
               style={[
@@ -418,7 +413,6 @@ export default function GameRoom() {
               </View>
             </Animated.View>
           )}
-          {/* 3rd Place */}
           {third && (
             <Animated.View
               style={[
@@ -453,34 +447,53 @@ export default function GameRoom() {
       style={styles.container}
       edges={["top", "bottom", "left", "right"]}
     >
-      {/* GAME OVER SCREEN */}
       {gameState === "GAME_OVER" ? (
         renderPodium()
       ) : (
         <>
           <View style={styles.header}>
-            <View style={styles.headerLeft}>
+            {/* 🏠 NEW: Top Bar with Room ID */}
+            <View style={styles.topBar}>
+              <TouchableOpacity
+                onPress={copyRoomId}
+                style={styles.roomCodeBadge}
+              >
+                <Text style={styles.roomCodeLabel}>ROOM CODE:</Text>
+                <Text style={styles.roomCodeText}>{roomId}</Text>
+                <Text style={styles.copyIcon}>📋</Text>
+              </TouchableOpacity>
+
+              <View style={styles.roundBadge}>
+                <Text style={styles.roundText}>
+                  Round {currentRound}/{totalRounds}
+                </Text>
+              </View>
+            </View>
+
+            {/* Main Game Info Row */}
+            <View style={styles.gameInfoRow}>
               <TouchableOpacity
                 onPress={() => setShowSidebar(true)}
                 style={styles.menuButton}
               >
                 <Text style={styles.menuIcon}>👥</Text>
               </TouchableOpacity>
-              <View>
-                <Text style={styles.title}>
-                  Round {currentRound} / {totalRounds}
-                </Text>
-                <Text style={styles.wordDisplay}>{getDisplayWord()}</Text>
-              </View>
-            </View>
 
-            {gameState !== "WAITING" && (
-              <View
-                style={[styles.timerBadge, timeLeft < 10 && styles.timerUrgent]}
-              >
-                <Text style={styles.timerText}>{timeLeft}s</Text>
-              </View>
-            )}
+              <Text style={styles.wordDisplay}>{getDisplayWord()}</Text>
+
+              {gameState !== "WAITING" ? (
+                <View
+                  style={[
+                    styles.timerBadge,
+                    timeLeft < 10 && styles.timerUrgent,
+                  ]}
+                >
+                  <Text style={styles.timerText}>{timeLeft}s</Text>
+                </View>
+              ) : (
+                <View style={{ width: 40 }} />
+              )}
+            </View>
 
             <View style={styles.headerButtons}>
               {isDrawer && gameState === "PLAYING" && (
@@ -537,7 +550,7 @@ export default function GameRoom() {
         </>
       )}
 
-      {/* Sidebar Modal */}
+      {/* Sidebar & Word Modals (Same as before) */}
       <Modal
         visible={showSidebar}
         animationType="fade"
@@ -595,7 +608,6 @@ export default function GameRoom() {
         </View>
       </Modal>
 
-      {/* Word Selection Modal */}
       <Modal
         visible={isDrawer && gameState === "SELECTING"}
         animationType="slide"
@@ -632,16 +644,77 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
     borderBottomWidth: 1,
     borderBottomColor: "#eee",
+  },
+
+  // 🆕 Top Bar Styles
+  topBar: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
+    marginBottom: 10,
   },
-  headerLeft: { flexDirection: "row", alignItems: "center", gap: 10 },
-  menuButton: { padding: 5, backgroundColor: "#f0f0f0", borderRadius: 8 },
+  roomCodeBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#e3f2fd",
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#2196F3",
+  },
+  roomCodeLabel: {
+    fontSize: 10,
+    color: "#2196F3",
+    fontWeight: "bold",
+    marginRight: 5,
+  },
+  roomCodeText: {
+    fontSize: 14,
+    fontWeight: "bold",
+    color: "#333",
+    marginRight: 5,
+  },
+  copyIcon: { fontSize: 12 },
+  roundBadge: {
+    backgroundColor: "#f0f0f0",
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#333",
+  },
+  roundText: { fontSize: 12, fontWeight: "bold", color: "#333" },
+
+  gameInfoRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 0,
+  },
+  menuButton: {
+    padding: 5,
+    backgroundColor: "#f0f0f0",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#333",
+  },
   menuIcon: { fontSize: 20 },
-  headerButtons: { flexDirection: "row", gap: 8 },
+  wordDisplay: {
+    fontSize: 18,
+    fontWeight: "bold",
+    color: "#333",
+    flex: 1,
+    textAlign: "center",
+  },
+
+  headerButtons: {
+    flexDirection: "row",
+    gap: 8,
+    justifyContent: "center",
+    alignItems: "center",
+  },
   title: { fontSize: 10, color: "#666" },
-  wordDisplay: { fontSize: 16, fontWeight: "bold", color: "#333" },
   controls: { padding: 10, alignItems: "center" },
   startButton: {
     backgroundColor: "#4a90e2",
@@ -654,17 +727,19 @@ const styles = StyleSheet.create({
   leaveButton: { backgroundColor: "#ff4444", padding: 8, borderRadius: 6 },
   buttonText: { color: "white", fontWeight: "bold", fontSize: 12 },
 
-  canvasArea: { height: "70%", width: "100%" },
+  canvasArea: { height: "55%", width: "100%" },
   chatContainer: { flex: 1 },
 
   timerBadge: {
     backgroundColor: "#333",
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-    borderRadius: 12,
+    padding: 8,
+    borderRadius: 6,
+    width: 48,
+    alignItems: "center",
   },
   timerUrgent: { backgroundColor: "#ff4444" },
   timerText: { color: "white", fontWeight: "bold", fontSize: 12 },
+
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.5)",

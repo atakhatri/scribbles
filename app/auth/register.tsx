@@ -5,6 +5,7 @@ import React, { useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  ImageBackground,
   StyleSheet,
   Text,
   TextInput,
@@ -41,7 +42,7 @@ export default function Register() {
         username: username,
         email: email,
         createdAt: serverTimestamp(),
-        friends: [], // Ready for Phase 8
+        friends: [],
       });
 
       // 3. Update Auth Profile (for quicker access)
@@ -57,65 +58,80 @@ export default function Register() {
   };
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Create Account</Text>
+    <ImageBackground
+      source={require("../../assets/images/register.jpeg")}
+      style={styles.backgroundImage}
+      resizeMode="cover"
+    >
+      <View style={styles.containerTransparent}>
+        <Text style={styles.title}>Create Account</Text>
 
-      <TextInput
-        style={styles.input}
-        placeholder="Username (e.g., DrawingMaster)"
-        value={username}
-        onChangeText={setUsername}
-      />
-      <TextInput
-        style={styles.input}
-        placeholder="Email"
-        value={email}
-        onChangeText={setEmail}
-        autoCapitalize="none"
-      />
-      <TextInput
-        style={styles.input}
-        placeholder="Password"
-        value={password}
-        onChangeText={setPassword}
-        secureTextEntry
-      />
+        <TextInput
+          style={styles.input}
+          placeholder="Username (e.g., DrawingMaster)"
+          placeholderTextColor={"#333"}
+          value={username}
+          onChangeText={setUsername}
+        />
+        <TextInput
+          style={styles.input}
+          placeholder="Email"
+          placeholderTextColor={"#333"}
+          value={email}
+          onChangeText={setEmail}
+          autoCapitalize="none"
+        />
+        <TextInput
+          style={styles.input}
+          placeholder="Password"
+          placeholderTextColor={"#333"}
+          value={password}
+          onChangeText={setPassword}
+          secureTextEntry
+        />
 
-      <TouchableOpacity
-        style={styles.button}
-        onPress={handleRegister}
-        disabled={loading}
-      >
-        {loading ? (
-          <ActivityIndicator color="#fff" />
-        ) : (
-          <Text style={styles.buttonText}>Sign Up</Text>
-        )}
-      </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.button}
+          onPress={handleRegister}
+          disabled={loading}
+        >
+          {loading ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={styles.buttonText}>Sign Up</Text>
+          )}
+        </TouchableOpacity>
 
-      <TouchableOpacity onPress={() => router.back()} style={styles.linkButton}>
-        <Text style={styles.linkText}>Back to Login</Text>
-      </TouchableOpacity>
-    </View>
+        <TouchableOpacity
+          onPress={() => router.back()}
+          style={styles.linkButton}
+        >
+          <Text style={styles.linkText}>Back to Login</Text>
+        </TouchableOpacity>
+      </View>
+    </ImageBackground>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  backgroundImage: { flex: 1 },
+  containerTransparent: {
     flex: 1,
     justifyContent: "center",
     padding: 20,
-    backgroundColor: "#4a90e2",
+    backgroundColor: "rgba(255, 254, 241, 0.7)",
   },
   title: {
     fontSize: 32,
     fontWeight: "bold",
-    color: "white",
+    color: "#333",
     marginBottom: 30,
     textAlign: "center",
   },
   input: {
     backgroundColor: "white",
+    borderColor: "#333",
+    borderWidth: 2,
     padding: 15,
     borderRadius: 10,
     marginBottom: 15,
@@ -129,5 +145,5 @@ const styles = StyleSheet.create({
   },
   buttonText: { color: "white", fontWeight: "bold", fontSize: 16 },
   linkButton: { marginTop: 20, alignItems: "center" },
-  linkText: { color: "white", opacity: 0.8 },
+  linkText: { color: "#333", fontWeight: "bold", fontSize: 16 },
 });

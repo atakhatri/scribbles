@@ -14,6 +14,7 @@ import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  ImageBackground,
   SafeAreaView,
   ScrollView,
   StyleSheet,
@@ -225,8 +226,13 @@ export default function FriendsScreen() {
   const renderActionButton = (user: UserProfile) => {
     if (myFriendIds.includes(user.id)) {
       return (
-        <View style={[styles.actionBadge, { backgroundColor: "#e0e0e0" }]}>
-          <Text style={[styles.actionText, { color: "#888" }]}>Friends</Text>
+        <View
+          style={[
+            styles.actionBadge,
+            { backgroundColor: "#e0e0e0", borderColor: "#333", borderWidth: 1 },
+          ]}
+        >
+          <Text style={[styles.actionText, { color: "#333" }]}>Friends</Text>
         </View>
       );
     }
@@ -242,7 +248,16 @@ export default function FriendsScreen() {
     }
     if (myOutgoingRequestIds.includes(user.id)) {
       return (
-        <View style={[styles.actionBadge, { backgroundColor: "#fff3cd" }]}>
+        <View
+          style={[
+            styles.actionBadge,
+            {
+              backgroundColor: "#fff3cd",
+              borderColor: "#856404",
+              borderWidth: 1,
+            },
+          ]}
+        >
           <Text style={[styles.actionText, { color: "#856404" }]}>Sent</Text>
         </View>
       );
@@ -258,158 +273,167 @@ export default function FriendsScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity
-          onPress={() => router.back()}
-          style={styles.backButton}
-        >
-          <Text style={styles.backButtonText}>← Back</Text>
-        </TouchableOpacity>
-        <Text style={styles.title}>Social</Text>
-        <View style={{ width: 50 }} />
-      </View>
-
-      <ScrollView style={styles.content}>
-        {/* SECTION 1: FRIEND REQUESTS */}
-        {requests.length > 0 && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>
-              Friend Requests ({requests.length})
-            </Text>
-            {requests.map((req) => (
-              <View key={req.id} style={styles.requestCard}>
-                <View>
-                  <Text style={styles.username}>{req.username}</Text>
-                  <Text style={styles.email}>wants to be friends</Text>
-                </View>
-                <TouchableOpacity
-                  style={[styles.actionButton, { backgroundColor: "#4caf50" }]}
-                  onPress={() => acceptRequest(req.id)}
-                >
-                  <Text style={styles.actionButtonText}>Accept</Text>
-                </TouchableOpacity>
-              </View>
-            ))}
-          </View>
-        )}
-
-        {/* SECTION 2: SEARCH */}
-        <View style={styles.searchContainer}>
-          <Text style={styles.sectionTitle}>Find Players</Text>
-          <View style={styles.inputRow}>
-            <TextInput
-              style={styles.input}
-              placeholder="Username or Email"
-              value={searchText}
-              onChangeText={setSearchText}
-              autoCapitalize="none"
-            />
+    <ImageBackground
+      source={require("../assets/images/friends.jpeg")}
+      style={styles.backgroundImage}
+      resizeMode="cover"
+    >
+      <SafeAreaView style={styles.container}>
+        <ScrollView style={styles.content}>
+          <View style={styles.header}>
             <TouchableOpacity
-              style={styles.searchButton}
-              onPress={handleSearch}
-              disabled={searching}
+              onPress={() => router.back()}
+              style={styles.backButton}
             >
-              {searching ? (
-                <ActivityIndicator color="white" />
-              ) : (
-                <Text style={styles.searchButtonText}>Search</Text>
-              )}
+              <Text style={styles.backButtonText}>← Back</Text>
             </TouchableOpacity>
+            <Text style={styles.title}>Friends</Text>
+            <View style={{ width: 50 }} />
           </View>
-
-          {/* Search Results */}
-          {searchResults.length > 0 && (
-            <View style={styles.resultsContainer}>
-              {searchResults.map((user) => (
-                <View key={user.id} style={styles.userRow}>
+          {/* SECTION 1: FRIEND REQUESTS */}
+          {requests.length > 0 && (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>
+                Friend Requests ({requests.length})
+              </Text>
+              {requests.map((req) => (
+                <View key={req.id} style={styles.requestCard}>
                   <View>
-                    <Text style={styles.username}>{user.username}</Text>
-                    <Text style={styles.email}>{user.email}</Text>
+                    <Text style={styles.username}>{req.username}</Text>
+                    <Text style={styles.email}>wants to be friends</Text>
                   </View>
-                  {renderActionButton(user)}
+                  <TouchableOpacity
+                    style={[
+                      styles.actionButton,
+                      { backgroundColor: "#4caf50" },
+                    ]}
+                    onPress={() => acceptRequest(req.id)}
+                  >
+                    <Text style={styles.actionButtonText}>Accept</Text>
+                  </TouchableOpacity>
                 </View>
               ))}
             </View>
           )}
-          {searchResults.length === 0 && !searching && searchText !== "" && (
-            <Text style={styles.noResults}>
-              No users found. Try exact match.
-            </Text>
-          )}
-        </View>
 
-        <View style={styles.divider} />
+          {/* SECTION 2: SEARCH */}
+          <View style={styles.searchContainer}>
+            <Text style={styles.sectionTitle}>Find Players</Text>
+            <View style={styles.inputRow}>
+              <TextInput
+                style={styles.input}
+                placeholder="Username or Email"
+                value={searchText}
+                onChangeText={setSearchText}
+                autoCapitalize="none"
+              />
+              <TouchableOpacity
+                style={styles.searchButton}
+                onPress={handleSearch}
+                disabled={searching}
+              >
+                {searching ? (
+                  <ActivityIndicator color="white" />
+                ) : (
+                  <Text style={styles.searchButtonText}>Search</Text>
+                )}
+              </TouchableOpacity>
+            </View>
 
-        {/* SECTION 3: FRIENDS LIST */}
-        <Text style={styles.sectionTitle}>Your Friends ({friends.length})</Text>
-
-        {loading && friends.length === 0 ? (
-          <ActivityIndicator style={{ marginTop: 20 }} color="#4a90e2" />
-        ) : (
-          <View>
-            {friends.length === 0 ? (
-              <Text style={styles.emptyText}>No friends yet.</Text>
-            ) : (
-              friends.map((friend) => (
-                <View key={friend.id} style={styles.friendCard}>
-                  <View
-                    style={{
-                      flexDirection: "row",
-                      alignItems: "center",
-                      flex: 1,
-                    }}
-                  >
-                    <View style={styles.avatar}>
-                      <Text style={styles.avatarText}>
-                        {friend.username[0].toUpperCase()}
-                      </Text>
-                    </View>
+            {/* Search Results */}
+            {searchResults.length > 0 && (
+              <View style={styles.resultsContainer}>
+                {searchResults.map((user) => (
+                  <View key={user.id} style={styles.userRow}>
                     <View>
-                      <Text style={styles.friendName}>{friend.username}</Text>
-                      <Text style={styles.friendEmail}>Friend</Text>
+                      <Text style={styles.username}>{user.username}</Text>
+                      <Text style={styles.email}>{user.email}</Text>
                     </View>
+                    {renderActionButton(user)}
                   </View>
-                  {/* Remove Button */}
-                  <TouchableOpacity
-                    style={styles.removeButton}
-                    onPress={() => removeFriend(friend.id)}
-                  >
-                    <Text style={styles.removeButtonText}>Remove</Text>
-                  </TouchableOpacity>
-                </View>
-              ))
+                ))}
+              </View>
+            )}
+            {searchResults.length === 0 && !searching && searchText !== "" && (
+              <Text style={styles.noResults}>
+                No users found. Try exact match.
+              </Text>
             )}
           </View>
-        )}
-        <View style={{ height: 40 }} />
-      </ScrollView>
-    </SafeAreaView>
+
+          <View style={styles.divider} />
+
+          {/* SECTION 3: FRIENDS LIST */}
+          <Text style={styles.sectionTitle}>
+            Your Friends ({friends.length})
+          </Text>
+
+          {loading && friends.length === 0 ? (
+            <ActivityIndicator style={{ marginTop: 20 }} color="#4a90e2" />
+          ) : (
+            <View>
+              {friends.length === 0 ? (
+                <Text style={styles.emptyText}>No friends yet.</Text>
+              ) : (
+                friends.map((friend) => (
+                  <View key={friend.id} style={styles.friendCard}>
+                    <View
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        flex: 1,
+                      }}
+                    >
+                      <View style={styles.avatar}>
+                        <Text style={styles.avatarText}>
+                          {friend.username[0].toUpperCase()}
+                        </Text>
+                      </View>
+                      <View>
+                        <Text style={styles.friendName}>{friend.username}</Text>
+                        <Text style={styles.friendEmail}>Friend</Text>
+                      </View>
+                    </View>
+                    {/* Remove Button */}
+                    <TouchableOpacity
+                      style={styles.removeButton}
+                      onPress={() => removeFriend(friend.id)}
+                    >
+                      <Text style={styles.removeButtonText}>Remove</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))
+              )}
+            </View>
+          )}
+          <View style={{ height: 40 }} />
+        </ScrollView>
+      </SafeAreaView>
+    </ImageBackground>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#f5f5f5" },
+  container: { flex: 1, backgroundColor: "#ffffff33" },
+  backgroundImage: { flex: 1 },
+  content: { flex: 1, padding: 20 },
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    padding: 20,
-    backgroundColor: "white",
-    borderBottomWidth: 1,
-    borderColor: "#eee",
+    paddingTop: 30,
+    marginBottom: 20,
   },
-  backButton: { padding: 10 },
-  backButtonText: { color: "#4a90e2", fontSize: 16 },
-  title: { fontSize: 20, fontWeight: "bold", color: "#333" },
-  content: { flex: 1, padding: 20 },
-
-  section: { marginBottom: 25 },
+  backButton: { padding: 0 },
+  backButtonText: { color: "white", fontWeight: "bold", fontSize: 20 },
+  title: { fontSize: 28, fontWeight: "bold", color: "white" },
+  section: { marginBottom: 15 },
   sectionTitle: {
     fontSize: 18,
     fontWeight: "bold",
-    color: "#333",
-    marginBottom: 15,
+    color: "white",
+    marginBottom: 10,
+    paddingLeft: 10,
   },
 
   // Requests
@@ -427,8 +451,8 @@ const styles = StyleSheet.create({
 
   // Search
   searchContainer: {
-    backgroundColor: "white",
-    padding: 20,
+    backgroundColor: "#dddddd7f",
+    padding: 10,
     borderRadius: 15,
     marginBottom: 20,
   },
@@ -442,14 +466,14 @@ const styles = StyleSheet.create({
     borderColor: "#ddd",
   },
   searchButton: {
-    backgroundColor: "#4a90e2",
+    backgroundColor: "#ffaa00ff",
     paddingHorizontal: 20,
     justifyContent: "center",
     borderRadius: 8,
   },
   searchButtonText: { color: "white", fontWeight: "bold" },
 
-  resultsContainer: { marginTop: 15 },
+  resultsContainer: { marginTop: 12 },
   userRow: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -461,9 +485,11 @@ const styles = StyleSheet.create({
   },
   noResults: {
     marginTop: 10,
-    color: "#999",
+    color: "white",
     fontStyle: "italic",
     textAlign: "center",
+    fontWeight: "bold",
+    fontSize: 16,
   },
 
   // Buttons
@@ -472,6 +498,8 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     paddingHorizontal: 15,
     borderRadius: 6,
+    borderColor: "#333",
+    borderWidth: 1,
   },
   actionButtonText: { color: "white", fontSize: 12, fontWeight: "bold" },
   actionBadge: { paddingVertical: 8, paddingHorizontal: 15, borderRadius: 6 },
@@ -483,17 +511,19 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     paddingHorizontal: 12,
     borderRadius: 6,
+    borderColor: "#d32f2fff",
+    borderWidth: 1,
   },
   removeButtonText: { color: "#d32f2f", fontSize: 11, fontWeight: "bold" },
 
-  divider: { height: 1, backgroundColor: "#ddd", marginBottom: 20 },
+  divider: { height: 2, backgroundColor: "#ddd", marginBottom: 20 },
 
   // Friend Card
   friendCard: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    backgroundColor: "white",
+    backgroundColor: "#fffcf0ff",
     padding: 15,
     borderRadius: 12,
     marginBottom: 10,
@@ -502,15 +532,15 @@ const styles = StyleSheet.create({
     width: 50,
     height: 50,
     borderRadius: 25,
-    backgroundColor: "#eee",
+    backgroundColor: "#333",
     justifyContent: "center",
     alignItems: "center",
     marginRight: 15,
   },
-  avatarText: { fontSize: 20, fontWeight: "bold", color: "#666" },
+  avatarText: { fontSize: 20, fontWeight: "bold", color: "white" },
   friendName: { fontSize: 16, fontWeight: "bold", color: "#333" },
-  friendEmail: { fontSize: 12, color: "#999" },
+  friendEmail: { fontSize: 12, color: "#434343ff" },
   username: { fontWeight: "bold", color: "#333" },
-  email: { fontSize: 12, color: "#666" },
+  email: { fontSize: 12, color: "#666", marginTop: 2, flexShrink: 1 },
   emptyText: { textAlign: "center", color: "#999", marginTop: 10 },
 });

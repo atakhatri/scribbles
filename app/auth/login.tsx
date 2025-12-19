@@ -4,6 +4,7 @@ import React, { useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  ImageBackground,
   StyleSheet,
   Text,
   TextInput,
@@ -31,66 +32,80 @@ export default function Login() {
   };
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Welcome Back</Text>
+    <ImageBackground
+      source={require("../../assets/images/login.jpeg")}
+      style={styles.backgroundImage}
+      resizeMode="cover"
+    >
+      <View style={styles.containerTransparent}>
+        <Text style={styles.title}>Welcome Back</Text>
 
-      <TextInput
-        style={styles.input}
-        placeholder="Email"
-        value={email}
-        onChangeText={setEmail}
-        autoCapitalize="none"
-      />
-      <TextInput
-        style={styles.input}
-        placeholder="Password"
-        value={password}
-        onChangeText={setPassword}
-        secureTextEntry
-      />
+        <TextInput
+          style={styles.input}
+          placeholder="Email"
+          placeholderTextColor={"#333"}
+          value={email}
+          onChangeText={setEmail}
+          autoCapitalize="none"
+        />
+        <TextInput
+          style={styles.input}
+          placeholder="Password"
+          placeholderTextColor={"#333"}
+          value={password}
+          onChangeText={setPassword}
+          secureTextEntry
+        />
 
-      <TouchableOpacity
-        style={styles.button}
-        onPress={handleLogin}
-        disabled={loading}
-      >
-        {loading ? (
-          <ActivityIndicator color="#fff" />
-        ) : (
-          <Text style={styles.buttonText}>Log In</Text>
-        )}
-      </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.button}
+          onPress={handleLogin}
+          disabled={loading}
+        >
+          {loading ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={styles.buttonText}>Log In</Text>
+          )}
+        </TouchableOpacity>
 
-      <TouchableOpacity
-        onPress={() => router.push("/auth/register")}
-        style={styles.linkButton}
-      >
-        <Text style={styles.linkText}>Don't have an account? Sign Up</Text>
-      </TouchableOpacity>
+        <TouchableOpacity
+          onPress={() => router.push("/auth/register")}
+          style={styles.linkButton}
+        >
+          <Text style={styles.linkText}>Don't have an account? Sign Up</Text>
+        </TouchableOpacity>
 
-      <TouchableOpacity onPress={() => router.back()} style={styles.linkButton}>
-        <Text style={styles.linkText}>Cancel</Text>
-      </TouchableOpacity>
-    </View>
+        <TouchableOpacity
+          onPress={() => router.back()}
+          style={styles.linkButton}
+        >
+          <Text style={styles.linkText}>Cancel</Text>
+        </TouchableOpacity>
+      </View>
+    </ImageBackground>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  backgroundImage: { flex: 1 },
+  containerTransparent: {
     flex: 1,
     justifyContent: "center",
     padding: 20,
-    backgroundColor: "#4a90e2",
+    backgroundColor: "rgba(255, 255, 255, 0)", // Semi-transparent overlay
   },
   title: {
     fontSize: 32,
     fontWeight: "bold",
-    color: "white",
+    color: "black",
     marginBottom: 30,
     textAlign: "center",
   },
   input: {
-    backgroundColor: "white",
+    backgroundColor: "#fff8f2ff",
+    borderColor: "#333",
+    borderWidth: 2,
     padding: 15,
     borderRadius: 10,
     marginBottom: 15,
@@ -103,6 +118,6 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   buttonText: { color: "white", fontWeight: "bold", fontSize: 16 },
-  linkButton: { marginTop: 20, alignItems: "center" },
-  linkText: { color: "white", opacity: 0.8 },
+  linkButton: { marginTop: 20, alignItems: "center", marginBottom: 5 },
+  linkText: { color: "black", opacity: 0.9, fontSize: 16, fontWeight: "bold" },
 });

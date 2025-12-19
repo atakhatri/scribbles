@@ -159,6 +159,7 @@ export default function ChatWindow({
           value={inputText}
           onChangeText={setInputText}
           placeholder={isDrawer ? "Chat..." : "Type guess here..."}
+          placeholderTextColor={"#333"}
           onSubmitEditing={sendMessage}
         />
         <TouchableOpacity onPress={sendMessage} style={styles.sendButton}>
@@ -173,8 +174,8 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "white",
-    borderTopWidth: 1,
-    borderColor: "#ddd",
+    borderTopWidth: 2,
+    borderColor: "#333",
   },
   chatArea: { flex: 1, padding: 10 },
   messageRow: { flexDirection: "row", marginBottom: 4 },
@@ -190,14 +191,19 @@ const styles = StyleSheet.create({
   inputArea: { flexDirection: "row", padding: 10, backgroundColor: "#f9f9f9" },
   input: {
     flex: 1,
-    borderWidth: 1,
-    borderColor: "#ddd",
+    borderWidth: 2,
+    borderColor: "#333",
     borderRadius: 20,
     paddingHorizontal: 15,
     paddingVertical: 8,
     backgroundColor: "white",
     marginRight: 10,
   },
-  sendButton: { justifyContent: "center", paddingHorizontal: 15 },
-  sendButtonText: { color: "#007AFF", fontWeight: "bold" },
+  sendButton: {
+    justifyContent: "center",
+    paddingHorizontal: 15,
+    backgroundColor: "#007AFF",
+    borderRadius: 20,
+  },
+  sendButtonText: { color: "white", fontWeight: "bold", fontSize: 16 },
 });

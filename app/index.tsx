@@ -5,6 +5,7 @@ import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  ImageBackground,
   Modal,
   SafeAreaView,
   ScrollView,
@@ -79,8 +80,8 @@ export default function Index() {
     setUseCustomInput(false);
 
     router.push({
-      pathname: `/game/${randomCode}`,
-      params: { rounds: roundsToPlay },
+      pathname: "/game/[id]",
+      params: { id: randomCode, rounds: roundsToPlay },
     });
   };
 
@@ -103,158 +104,177 @@ export default function Index() {
   // ---------------- RENDER: LOGGED IN LOBBY ----------------
   if (user) {
     return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.header}>
-          <Text style={styles.welcomeText}>Welcome, {username}!</Text>
-          <TouchableOpacity onPress={() => router.push("/profile")}>
-            <View style={styles.profileIcon}>
-              <Text style={styles.profileIconText}>
-                {username[0]?.toUpperCase() || "U"}
-              </Text>
-            </View>
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.content}>
-          <Text style={styles.title}>Scribbles</Text>
-
-          <View style={styles.card}>
-            <Text style={styles.label}>Join a Game</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="Enter Room Code"
-              value={roomCode}
-              onChangeText={setRoomCode}
-              autoCapitalize="characters"
-              maxLength={6}
-            />
-            <TouchableOpacity style={styles.buttonPrimary} onPress={joinRoom}>
-              <Text style={styles.buttonText}>Join Room</Text>
-            </TouchableOpacity>
-            <View style={styles.divider}>
-              <Text style={styles.dividerText}>OR</Text>
-            </View>
-            <TouchableOpacity
-              style={styles.buttonSecondary}
-              onPress={() => setShowRoundModal(true)}
-            >
-              <Text style={styles.buttonTextSecondary}>Create New Room</Text>
+      <ImageBackground
+        source={require("../assets/images/main_inner.jpeg")}
+        style={styles.backgroundImage}
+        resizeMode="cover"
+      >
+        <SafeAreaView style={styles.container}>
+          <View style={styles.header}>
+            <Text style={styles.welcomeText}>Welcome, {username} !</Text>
+            <TouchableOpacity onPress={() => router.push("/profile")}>
+              <View style={styles.profileIcon}>
+                <Text style={styles.profileIconText}>
+                  {username[0]?.toUpperCase() || "U"}
+                </Text>
+              </View>
             </TouchableOpacity>
           </View>
-        </View>
 
-        {/* Round Selection Modal */}
-        <Modal
-          visible={showRoundModal}
-          transparent
-          animationType="slide"
-          onRequestClose={() => setShowRoundModal(false)}
-        >
-          <View style={styles.modalOverlay}>
-            <View style={styles.modalContent}>
-              <Text style={styles.modalTitle}>Game Settings</Text>
-              <Text style={styles.modalSubtitle}>Number of Rounds</Text>
+          <View style={styles.content}>
+            <Text style={styles.title}>Scribbles</Text>
 
-              {!useCustomInput ? (
-                <View style={styles.pickerContainer}>
-                  <View style={styles.pickerWindow} pointerEvents="none" />
-                  <ScrollView
-                    style={styles.scroller}
-                    contentContainerStyle={styles.scrollerContent}
-                    showsVerticalScrollIndicator={false}
-                    snapToInterval={50}
-                    decelerationRate="fast"
-                    onMomentumScrollEnd={(e) => {
-                      const offsetY = e.nativeEvent.contentOffset.y;
-                      const index = Math.round(offsetY / 50);
-                      if (ROUND_OPTIONS[index])
-                        setSelectedRounds(ROUND_OPTIONS[index]);
-                    }}
-                  >
-                    <View style={{ height: 75 }} />
-                    {ROUND_OPTIONS.map((r) => (
-                      <View key={r} style={styles.scrollItem}>
-                        <Text
-                          style={[
-                            styles.scrollItemText,
-                            selectedRounds === r && styles.selectedItemText,
-                          ]}
-                        >
-                          {r}
-                        </Text>
-                      </View>
-                    ))}
-                    <View style={{ height: 75 }} />
-                  </ScrollView>
-                </View>
-              ) : (
-                <TextInput
-                  style={styles.customInput}
-                  placeholder="Type rounds (1-50)"
-                  keyboardType="number-pad"
-                  value={customRounds}
-                  onChangeText={setCustomRounds}
-                  autoFocus
-                />
-              )}
-
-              <TouchableOpacity
-                onPress={() => setUseCustomInput(!useCustomInput)}
-                style={styles.toggleInputBtn}
-              >
-                <Text style={styles.toggleInputText}>
-                  {useCustomInput ? "Switch to List" : "Type Manually"}
-                </Text>
+            <View style={styles.card}>
+              <Text style={styles.label}>Join a Game</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="Enter Room Code"
+                placeholderTextColor={"#333"}
+                value={roomCode}
+                onChangeText={setRoomCode}
+                autoCapitalize="characters"
+                maxLength={6}
+              />
+              <TouchableOpacity style={styles.buttonPrimary} onPress={joinRoom}>
+                <Text style={styles.buttonText}>Join Room</Text>
               </TouchableOpacity>
+              <View style={styles.divider}>
+                <Text style={styles.dividerText}>OR</Text>
+              </View>
+              <TouchableOpacity
+                style={styles.buttonSecondary}
+                onPress={() => setShowRoundModal(true)}
+              >
+                <Text style={styles.buttonTextSecondary}>Create New Room</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
 
-              <View style={styles.modalButtons}>
+          {/* Round Selection Modal */}
+          <Modal
+            visible={showRoundModal}
+            transparent
+            animationType="slide"
+            onRequestClose={() => setShowRoundModal(false)}
+          >
+            <View style={styles.modalOverlay}>
+              <View style={styles.modalContent}>
+                <Text style={styles.modalTitle}>Game Settings</Text>
+                <Text style={styles.modalSubtitle}>Number of Rounds</Text>
+
+                {!useCustomInput ? (
+                  <View style={styles.pickerContainer}>
+                    <View style={styles.pickerWindow} pointerEvents="none" />
+                    <ScrollView
+                      style={styles.scroller}
+                      contentContainerStyle={styles.scrollerContent}
+                      showsVerticalScrollIndicator={false}
+                      snapToInterval={50}
+                      decelerationRate="fast"
+                      onMomentumScrollEnd={(e) => {
+                        const offsetY = e.nativeEvent.contentOffset.y;
+                        const index = Math.round(offsetY / 50);
+                        if (ROUND_OPTIONS[index])
+                          setSelectedRounds(ROUND_OPTIONS[index]);
+                      }}
+                    >
+                      <View style={{ height: 75 }} />
+                      {ROUND_OPTIONS.map((r) => (
+                        <View key={r} style={styles.scrollItem}>
+                          <Text
+                            style={[
+                              styles.scrollItemText,
+                              selectedRounds === r && styles.selectedItemText,
+                            ]}
+                          >
+                            {r}
+                          </Text>
+                        </View>
+                      ))}
+                      <View style={{ height: 75 }} />
+                    </ScrollView>
+                  </View>
+                ) : (
+                  <TextInput
+                    style={styles.customInput}
+                    placeholder="Type rounds (1-50)"
+                    placeholderTextColor={"#333"}
+                    keyboardType="number-pad"
+                    value={customRounds}
+                    onChangeText={setCustomRounds}
+                    autoFocus
+                  />
+                )}
+
                 <TouchableOpacity
-                  onPress={() => setShowRoundModal(false)}
-                  style={styles.cancelBtn}
+                  onPress={() => setUseCustomInput(!useCustomInput)}
+                  style={styles.toggleInputBtn}
                 >
-                  <Text style={styles.cancelText}>Cancel</Text>
+                  <Text style={styles.toggleInputText}>
+                    {useCustomInput ? "Switch to List" : "Type Manually"}
+                  </Text>
                 </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={handleCreateRoom}
-                  style={styles.confirmBtn}
-                >
-                  <Text style={styles.confirmText}>Start Game</Text>
-                </TouchableOpacity>
+
+                <View style={styles.modalButtons}>
+                  <TouchableOpacity
+                    onPress={() => setShowRoundModal(false)}
+                    style={styles.cancelBtn}
+                  >
+                    <Text style={styles.cancelText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={handleCreateRoom}
+                    style={styles.confirmBtn}
+                  >
+                    <Text style={styles.confirmText}>Start Game</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
             </View>
-          </View>
-        </Modal>
-      </SafeAreaView>
+          </Modal>
+        </SafeAreaView>
+      </ImageBackground>
     );
   }
 
   // ---------------- RENDER: LANDING SCREEN ----------------
   return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.content}>
-        <Text style={styles.title}>Scribbles</Text>
-        <Text style={styles.subtitle}>Draw. Guess. Win.</Text>
+    <ImageBackground
+      source={require("../assets/images/main_bg.jpeg")}
+      style={styles.backgroundImage}
+      resizeMode="cover"
+    >
+      <SafeAreaView style={styles.containerTransparent}>
+        <View style={styles.content}>
+          <Text style={styles.title}>Scribbles</Text>
+          <Text style={styles.subtitle}>Draw. Guess. Win.</Text>
 
-        <TouchableOpacity
-          style={styles.buttonPrimary}
-          onPress={() => router.push("/auth/login")}
-        >
-          <Text style={styles.buttonText}>Log In</Text>
-        </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.buttonPrimary}
+            onPress={() => router.push("/auth/login")}
+          >
+            <Text style={styles.buttonText}>Log In</Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity
-          style={[styles.buttonSecondary, { marginTop: 15 }]}
-          onPress={() => router.push("/auth/register")}
-        >
-          <Text style={styles.buttonTextSecondary}>Create Account</Text>
-        </TouchableOpacity>
-      </View>
-    </SafeAreaView>
+          <TouchableOpacity
+            style={[styles.buttonSecondary, { marginTop: 15 }]}
+            onPress={() => router.push("/auth/register")}
+          >
+            <Text style={styles.buttonTextSecondary}>Create Account</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    </ImageBackground>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#4a90e2" },
+  container: { flex: 1, backgroundColor: "transparent" },
+  containerTransparent: {
+    flex: 1,
+    backgroundColor: "rgba(255, 247, 225, 0.7)",
+  },
+  backgroundImage: { flex: 1 },
   centerContainer: { flex: 1, justifyContent: "center", alignItems: "center" },
   header: {
     flexDirection: "row",
@@ -263,45 +283,59 @@ const styles = StyleSheet.create({
     padding: 20,
     paddingTop: 40,
   },
-  welcomeText: { color: "white", fontSize: 18, fontWeight: "bold" },
+  welcomeText: {
+    color: "white",
+    fontSize: 18,
+    fontWeight: "bold",
+    backgroundColor: "rgba(0, 0, 0, 0.7)",
+    padding: 8,
+    borderRadius: 10,
+    marginLeft: 5,
+  },
   profileIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: "white",
+    width: 48,
+    height: 48,
+    borderRadius: 40,
+    backgroundColor: "#ffeeeeff",
     justifyContent: "center",
     alignItems: "center",
   },
-  profileIconText: { color: "#4a90e2", fontWeight: "bold", fontSize: 18 },
+  profileIconText: { color: "#333", fontWeight: "bold", fontSize: 22 },
   content: { flex: 1, justifyContent: "center", padding: 20 },
   title: {
-    fontSize: 48,
+    fontSize: 64,
     fontWeight: "bold",
     color: "white",
+    textShadowColor: "rgba(0, 0, 0, 0.75)",
+    textShadowOffset: { width: -1, height: 1 },
+    textShadowRadius: 10,
     textAlign: "center",
     marginBottom: 10,
   },
   subtitle: {
     fontSize: 18,
-    color: "rgba(255,255,255,0.8)",
+    fontWeight: "bold",
+    color: "rgba(0, 0, 0, 0.8)",
     textAlign: "center",
     marginBottom: 40,
   },
   card: {
-    backgroundColor: "white",
+    backgroundColor: "#dddddd95",
     borderRadius: 20,
     padding: 30,
     elevation: 8,
   },
-  label: { fontSize: 16, fontWeight: "600", marginBottom: 10, color: "#333" },
+  label: { fontSize: 18, fontWeight: "900", marginBottom: 10, color: "black" },
   input: {
-    backgroundColor: "#f0f0f0",
+    backgroundColor: "#fff9f2ff",
+
     padding: 15,
     borderRadius: 10,
     fontSize: 18,
     marginBottom: 15,
-    borderWidth: 1,
-    borderColor: "#ddd",
+    borderWidth: 2,
+    borderColor: "#333",
+    color: "#333",
   },
   buttonPrimary: {
     backgroundColor: "#333",
@@ -309,18 +343,18 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     alignItems: "center",
   },
-  buttonText: { color: "white", fontWeight: "bold", fontSize: 16 },
+  buttonText: { color: "white", fontWeight: "bold", fontSize: 20 },
   buttonSecondary: {
-    backgroundColor: "#5d5d5dff",
-    padding: 15,
+    backgroundColor: "#33333370",
+    padding: 12,
     borderRadius: 10,
     alignItems: "center",
     borderWidth: 2,
-    borderColor: "#fff",
+    borderColor: "#333",
   },
-  buttonTextSecondary: { color: "white", fontWeight: "bold", fontSize: 16 },
+  buttonTextSecondary: { color: "white", fontWeight: "bold", fontSize: 20 },
   divider: { alignItems: "center", marginVertical: 20 },
-  dividerText: { color: "#999", fontWeight: "bold" },
+  dividerText: { color: "#333", fontSize: 18, fontWeight: "bold" },
 
   // Modal Styles
   modalOverlay: {
@@ -330,7 +364,7 @@ const styles = StyleSheet.create({
     padding: 20,
   },
   modalContent: {
-    backgroundColor: "white",
+    backgroundColor: "#fffaeeff",
     borderRadius: 20,
     padding: 20,
     alignItems: "center",
@@ -353,7 +387,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 20,
-    backgroundColor: "#f8f9fa",
+    backgroundColor: "#fff9f2ff",
     borderRadius: 10,
     overflow: "hidden",
   },
@@ -364,7 +398,7 @@ const styles = StyleSheet.create({
     width: "80%",
     borderTopWidth: 2,
     borderBottomWidth: 2,
-    borderColor: "#4a90e2",
+    borderColor: "#e27d4aff",
     zIndex: 10,
     backgroundColor: "rgba(74, 144, 226, 0.1)",
   },
@@ -383,7 +417,7 @@ const styles = StyleSheet.create({
     width: "80%",
     height: 50,
     borderWidth: 1,
-    borderColor: "#ddd",
+    borderColor: "#333",
     borderRadius: 8,
     paddingHorizontal: 15,
     fontSize: 18,
@@ -392,22 +426,27 @@ const styles = StyleSheet.create({
   },
 
   toggleInputBtn: { marginBottom: 20 },
-  toggleInputText: { color: "#4a90e2", fontSize: 14, fontWeight: "600" },
+  toggleInputText: {
+    color: "#333",
+    fontSize: 16,
+    fontWeight: "600",
+    textDecorationLine: "underline",
+  },
 
   modalButtons: { flexDirection: "row", gap: 10, width: "100%" },
   cancelBtn: {
     flex: 1,
     padding: 15,
     borderRadius: 10,
-    backgroundColor: "#f0f0f0",
+    backgroundColor: "#333",
     alignItems: "center",
   },
-  cancelText: { color: "#666", fontWeight: "bold" },
+  cancelText: { color: "#ddd", fontWeight: "bold" },
   confirmBtn: {
     flex: 1,
     padding: 15,
     borderRadius: 10,
-    backgroundColor: "#4a90e2",
+    backgroundColor: "#e27d4aff",
     alignItems: "center",
   },
   confirmText: { color: "white", fontWeight: "bold" },
