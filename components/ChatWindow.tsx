@@ -1,11 +1,14 @@
-// components/ChatWindow.tsx
 import {
   addDoc,
+  arrayUnion,
   collection,
+  doc,
+  increment,
   onSnapshot,
   orderBy,
   query,
   serverTimestamp,
+  updateDoc,
 } from "firebase/firestore";
 import React, { useEffect, useRef, useState } from "react";
 import {
@@ -23,21 +26,23 @@ import { auth, db } from "../firebaseConfig";
 interface ChatMessage {
   id: string;
   text: string;
-  sender: string; // User ID or Name
+  sender: string;
   createdAt: any;
-  isSystem?: boolean; // True if it's a "User won!" message
+  isSystem?: boolean;
 }
 
 interface ChatProps {
   roomId: string;
-  currentWord: string; // We need this to check for the win
-  isDrawer: boolean; // Drawer shouldn't be able to guess their own word!
+  currentWord: string;
+  isDrawer: boolean;
+  roundEndTime: number | null; // New prop for scoring
 }
 
 export default function ChatWindow({
   roomId,
   currentWord,
   isDrawer,
+  roundEndTime,
 }: ChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState("");
@@ -56,15 +61,13 @@ export default function ChatWindow({
         ...doc.data(),
       })) as ChatMessage[];
       setMessages(loadedMsgs);
-
-      // Auto-scroll to bottom when new message arrives
       setTimeout(() => flatListRef.current?.scrollToEnd(), 100);
     });
 
     return () => unsubscribe();
   }, [roomId]);
 
-  // 2. SEND Message (and check for WIN)
+  // 2. SEND Message
   const sendMessage = async () => {
     if (!inputText.trim()) return;
 
@@ -73,31 +76,47 @@ export default function ChatWindow({
     const msgsRef = collection(db, "rooms", roomId, "messages");
 
     // 🏆 WIN CONDITION CHECK 🏆
-    // If it's not the drawer, and the guess matches the word (case-insensitive)
     const isWin =
       !isDrawer &&
       currentWord &&
       textToSend.toUpperCase() === currentWord.toUpperCase();
 
     if (isWin) {
-      // 1. Post the "Winner" system message
+      if (user) {
+        // Calculate Time-Based Score
+        let points = 50; // Base points
+        if (roundEndTime) {
+          const timeLeft = Math.max(
+            0,
+            Math.ceil((roundEndTime - Date.now()) / 1000)
+          );
+          // Bonus: 2 points per second left
+          points += timeLeft * 2;
+        }
+
+        // A. Update Player Score
+        const playerRef = doc(db, "rooms", roomId, "players", user.uid);
+        await updateDoc(playerRef, { score: increment(points) });
+
+        // B. Mark as "Guessed"
+        const roomRef = doc(db, "rooms", roomId);
+        await updateDoc(roomRef, {
+          guessedPlayers: arrayUnion(user.uid),
+        });
+      }
+
+      // C. Post System Message
       await addDoc(msgsRef, {
-        text: `🎉 ${user?.uid.slice(
-          0,
-          4
-        )} GUESSED THE WORD! The word was "${currentWord}"`,
+        text: `🎉 ${user?.displayName || "Player"} GUESSED THE WORD!`,
         sender: "SYSTEM",
         createdAt: serverTimestamp(),
         isSystem: true,
       });
-
-      // 2. Reveal the word logic could go here (optional)
-      // For now, we just announce it.
     } else {
-      // Normal chat message
+      // Normal message
       await addDoc(msgsRef, {
         text: textToSend,
-        sender: user?.uid.slice(0, 6) || "Anon",
+        sender: user?.displayName || "Anon",
         createdAt: serverTimestamp(),
         isSystem: false,
       });
@@ -109,7 +128,7 @@ export default function ChatWindow({
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === "ios" ? "padding" : "height"}
-      keyboardVerticalOffset={100}
+      keyboardVerticalOffset={Platform.OS === "ios" ? 100 : 0}
       style={styles.container}
     >
       <View style={styles.chatArea}>
@@ -119,10 +138,7 @@ export default function ChatWindow({
           keyExtractor={(item) => item.id}
           renderItem={({ item }) => (
             <View
-              style={[
-                styles.messageRow,
-                item.isSystem && styles.systemRow, // Highlight system messages
-              ]}
+              style={[styles.messageRow, item.isSystem && styles.systemRow]}
             >
               {!item.isSystem && (
                 <Text style={styles.sender}>{item.sender}: </Text>
@@ -142,9 +158,7 @@ export default function ChatWindow({
           style={styles.input}
           value={inputText}
           onChangeText={setInputText}
-          placeholder={
-            isDrawer ? "Chat with players..." : "Type your guess here..."
-          }
+          placeholder={isDrawer ? "Chat..." : "Type guess here..."}
           onSubmitEditing={sendMessage}
         />
         <TouchableOpacity onPress={sendMessage} style={styles.sendButton}>
@@ -162,36 +176,18 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderColor: "#ddd",
   },
-  chatArea: {
-    flex: 1,
-    padding: 10,
-  },
-  messageRow: {
-    flexDirection: "row",
-    marginBottom: 4,
-  },
+  chatArea: { flex: 1, padding: 10 },
+  messageRow: { flexDirection: "row", marginBottom: 4 },
   systemRow: {
-    backgroundColor: "#d4edda", // Light green background for winners
+    backgroundColor: "#d4edda",
     padding: 5,
     borderRadius: 4,
     justifyContent: "center",
   },
-  sender: {
-    fontWeight: "bold",
-    color: "#555",
-  },
-  messageText: {
-    color: "#333",
-  },
-  systemText: {
-    color: "#155724", // Dark green text
-    fontWeight: "bold",
-  },
-  inputArea: {
-    flexDirection: "row",
-    padding: 10,
-    backgroundColor: "#f9f9f9",
-  },
+  sender: { fontWeight: "bold", color: "#555" },
+  messageText: { color: "#333" },
+  systemText: { color: "#155724", fontWeight: "bold" },
+  inputArea: { flexDirection: "row", padding: 10, backgroundColor: "#f9f9f9" },
   input: {
     flex: 1,
     borderWidth: 1,
@@ -202,12 +198,6 @@ const styles = StyleSheet.create({
     backgroundColor: "white",
     marginRight: 10,
   },
-  sendButton: {
-    justifyContent: "center",
-    paddingHorizontal: 15,
-  },
-  sendButtonText: {
-    color: "#007AFF",
-    fontWeight: "bold",
-  },
+  sendButton: { justifyContent: "center", paddingHorizontal: 15 },
+  sendButtonText: { color: "#007AFF", fontWeight: "bold" },
 });
