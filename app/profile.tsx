@@ -4,12 +4,12 @@ import React from "react";
 import {
   Alert,
   ImageBackground,
-  SafeAreaView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 import { auth } from "../firebaseConfig";
 
 export default function Profile() {
@@ -31,7 +31,7 @@ export default function Profile() {
       style={styles.backgroundImage}
       resizeMode="cover"
     >
-      <SafeAreaView style={styles.container}>
+      <SafeAreaProvider style={styles.container}>
         <View style={styles.card}>
           <View style={styles.avatar}>
             <Text style={styles.avatarText}>
@@ -68,7 +68,7 @@ export default function Profile() {
             <Text style={styles.backText}>Back to Lobby</Text>
           </TouchableOpacity>
         </View>
-      </SafeAreaView>
+      </SafeAreaProvider>
     </ImageBackground>
   );
 }

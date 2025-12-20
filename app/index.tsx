@@ -1,14 +1,19 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
 import { onAuthStateChanged, User } from "firebase/auth";
-import { doc, getDoc } from "firebase/firestore";
+import {
+  arrayRemove,
+  doc,
+  getDoc,
+  onSnapshot,
+  updateDoc,
+} from "firebase/firestore";
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   ImageBackground,
   Modal,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
@@ -16,8 +21,8 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 import { auth, db } from "../firebaseConfig";
-
 // Generate numbers 1-20 for the wheel
 const ROUND_OPTIONS = Array.from({ length: 20 }, (_, i) => i + 1);
 
@@ -34,6 +39,7 @@ export default function Index() {
   const [customRounds, setCustomRounds] = useState("");
   const [useCustomInput, setUseCustomInput] = useState(false);
   const [hasSeenOnboarding, setHasSeenOnboarding] = useState(false);
+  const [gameInvite, setGameInvite] = useState<any>(null);
 
   // 1. Listen for Auth State
   useEffect(() => {
@@ -71,6 +77,47 @@ export default function Index() {
     checkOnboarding();
     return () => unsubscribe();
   }, []);
+
+  // 1.5 Listen for Game Invites
+  useEffect(() => {
+    if (!user) return;
+    const unsub = onSnapshot(doc(db, "users", user.uid), (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        const invites = data.gameInvites || [];
+        if (invites.length > 0) {
+          // Show the latest invite
+          setGameInvite(invites[invites.length - 1]);
+        } else {
+          setGameInvite(null);
+        }
+      }
+    });
+    return () => unsub();
+  }, [user]);
+
+  const handleAcceptInvite = async () => {
+    if (!gameInvite || !user) return;
+    try {
+      const userRef = doc(db, "users", user.uid);
+      await updateDoc(userRef, {
+        gameInvites: arrayRemove(gameInvite),
+      });
+      setGameInvite(null);
+      router.push(`/game/${gameInvite.roomId}`);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleDeclineInvite = async () => {
+    if (!gameInvite || !user) return;
+    const userRef = doc(db, "users", user.uid);
+    await updateDoc(userRef, {
+      gameInvites: arrayRemove(gameInvite),
+    });
+    setGameInvite(null);
+  };
 
   // 2. Navigation Functions
   const handleCreateRoom = () => {
@@ -124,7 +171,7 @@ export default function Index() {
         style={styles.backgroundImage}
         resizeMode="cover"
       >
-        <SafeAreaView style={styles.container}>
+        <SafeAreaProvider style={styles.container}>
           <View style={styles.header}>
             <Text style={styles.welcomeText}>Welcome, {username} !</Text>
             <TouchableOpacity onPress={() => router.push("/profile")}>
@@ -247,7 +294,38 @@ export default function Index() {
               </View>
             </View>
           </Modal>
-        </SafeAreaView>
+
+          {/* Game Invite Modal */}
+          <Modal
+            visible={!!gameInvite}
+            transparent
+            animationType="fade"
+            onRequestClose={handleDeclineInvite}
+          >
+            <View style={styles.modalOverlay}>
+              <View style={styles.modalContent}>
+                <Text style={styles.modalTitle}>Game Invite! 🎮</Text>
+                <Text style={styles.modalSubtitle}>
+                  {gameInvite?.inviterName} invited you to play.
+                </Text>
+                <View style={styles.modalButtons}>
+                  <TouchableOpacity
+                    onPress={handleDeclineInvite}
+                    style={styles.cancelBtn}
+                  >
+                    <Text style={styles.cancelText}>Decline</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={handleAcceptInvite}
+                    style={styles.confirmBtn}
+                  >
+                    <Text style={styles.confirmText}>Join Game</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          </Modal>
+        </SafeAreaProvider>
       </ImageBackground>
     );
   }
@@ -259,7 +337,7 @@ export default function Index() {
       style={styles.backgroundImage}
       resizeMode="cover"
     >
-      <SafeAreaView style={styles.containerTransparent}>
+      <SafeAreaProvider style={styles.containerTransparent}>
         <View style={styles.content}>
           <Text style={styles.title}>Scribbles</Text>
           <Text style={styles.subtitle}>Draw. Guess. Win.</Text>
@@ -278,7 +356,7 @@ export default function Index() {
             <Text style={styles.buttonTextSecondary}>Create Account</Text>
           </TouchableOpacity>
         </View>
-      </SafeAreaView>
+      </SafeAreaProvider>
     </ImageBackground>
   );
 }
