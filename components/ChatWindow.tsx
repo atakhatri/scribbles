@@ -1,14 +1,11 @@
+import { User } from "firebase/auth";
 import {
   addDoc,
-  arrayUnion,
   collection,
-  doc,
-  increment,
   onSnapshot,
   orderBy,
   query,
   serverTimestamp,
-  updateDoc,
 } from "firebase/firestore";
 import React, { useEffect, useRef, useState } from "react";
 import {
@@ -21,60 +18,72 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { auth, db } from "../firebaseConfig";
+import { db } from "../firebaseConfig";
 
 interface ChatMessage {
   id: string;
+  userId: string;
+  userName: string;
   text: string;
-  sender: string;
-  createdAt: any;
-  isSystem?: boolean;
+  isCorrectGuess: boolean;
+  timestamp: any;
 }
 
 interface ChatProps {
-  roomId: string;
+  gameId: string;
+  currentUser: User | null;
   currentWord: string;
   isDrawer: boolean;
+<<<<<<< HEAD
   roundEndTime: number | null; // New prop for scoring
+=======
+  onCorrectGuess: (userId: string) => Promise<void>;
+>>>>>>> c542d9b36a0754b217908210bf8205353cde4d51
 }
 
 export default function ChatWindow({
-  roomId,
+  gameId,
+  currentUser,
   currentWord,
   isDrawer,
+<<<<<<< HEAD
   roundEndTime,
+=======
+  onCorrectGuess,
+>>>>>>> c542d9b36a0754b217908210bf8205353cde4d51
 }: ChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState("");
   const flatListRef = useRef<FlatList>(null);
 
-  // 1. LISTEN for messages
   useEffect(() => {
-    if (!roomId) return;
+    if (!gameId) return;
 
-    const msgsRef = collection(db, "rooms", roomId, "messages");
-    const q = query(msgsRef, orderBy("createdAt", "asc"));
+    const messagesRef = collection(db, "games", gameId, "messages");
+    const q = query(messagesRef, orderBy("timestamp", "asc"));
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const loadedMsgs = snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      })) as ChatMessage[];
-      setMessages(loadedMsgs);
-      setTimeout(() => flatListRef.current?.scrollToEnd(), 100);
+      const msgs: ChatMessage[] = [];
+      snapshot.forEach((doc) => {
+        msgs.push({ id: doc.id, ...doc.data() } as ChatMessage);
+      });
+      setMessages(msgs);
+      setTimeout(
+        () => flatListRef.current?.scrollToEnd({ animated: true }),
+        100
+      );
     });
 
     return () => unsubscribe();
-  }, [roomId]);
+  }, [gameId]);
 
-  // 2. SEND Message
-  const sendMessage = async () => {
-    if (!inputText.trim()) return;
+  const handleSend = async () => {
+    if (!inputText.trim() || !currentUser) return;
 
-    const textToSend = inputText.trim();
-    const user = auth.currentUser;
-    const msgsRef = collection(db, "rooms", roomId, "messages");
+    const text = inputText.trim();
+    const isGuess = text.toLowerCase() === currentWord.toLowerCase();
 
+<<<<<<< HEAD
     // 🏆 WIN CONDITION CHECK 🏆
     const isWin =
       !isDrawer &&
@@ -111,18 +120,47 @@ export default function ChatWindow({
         sender: "SYSTEM",
         createdAt: serverTimestamp(),
         isSystem: true,
+=======
+    // If it's a correct guess
+    if (isGuess && !isDrawer) {
+      // Don't show the word in chat, show a system message or specific style
+      await addDoc(collection(db, "games", gameId, "messages"), {
+        userId: currentUser.uid,
+        userName: currentUser.displayName || "Player",
+        text: "Correctly guessed the word!",
+        isCorrectGuess: true,
+        timestamp: serverTimestamp(),
+>>>>>>> c542d9b36a0754b217908210bf8205353cde4d51
       });
+
+      await onCorrectGuess(currentUser.uid);
     } else {
       // Normal message
-      await addDoc(msgsRef, {
-        text: textToSend,
-        sender: user?.displayName || "Anon",
-        createdAt: serverTimestamp(),
-        isSystem: false,
+      await addDoc(collection(db, "games", gameId, "messages"), {
+        userId: currentUser.uid,
+        userName: currentUser.displayName || "Player",
+        text: text,
+        isCorrectGuess: false,
+        timestamp: serverTimestamp(),
       });
     }
 
     setInputText("");
+  };
+
+  const renderItem = ({ item }: { item: ChatMessage }) => {
+    const isSystem = item.isCorrectGuess;
+
+    return (
+      <View style={[styles.messageRow, isSystem && styles.systemRow]}>
+        <Text style={[styles.userName, isSystem && styles.systemText]}>
+          {item.userName}:
+        </Text>
+        <Text style={[styles.messageText, isSystem && styles.systemText]}>
+          {item.text}
+        </Text>
+      </View>
+    );
   };
 
   return (
@@ -131,39 +169,28 @@ export default function ChatWindow({
       keyboardVerticalOffset={Platform.OS === "ios" ? 100 : 0}
       style={styles.container}
     >
-      <View style={styles.chatArea}>
-        <FlatList
-          ref={flatListRef}
-          data={messages}
-          keyExtractor={(item) => item.id}
-          renderItem={({ item }) => (
-            <View
-              style={[styles.messageRow, item.isSystem && styles.systemRow]}
-            >
-              {!item.isSystem && (
-                <Text style={styles.sender}>{item.sender}: </Text>
-              )}
-              <Text
-                style={[styles.messageText, item.isSystem && styles.systemText]}
-              >
-                {item.text}
-              </Text>
-            </View>
-          )}
-        />
-      </View>
+      <FlatList
+        ref={flatListRef}
+        data={messages}
+        renderItem={renderItem}
+        keyExtractor={(item) => item.id}
+        style={styles.list}
+        contentContainerStyle={styles.listContent}
+      />
 
-      <View style={styles.inputArea}>
+      <View style={styles.inputContainer}>
         <TextInput
           style={styles.input}
           value={inputText}
           onChangeText={setInputText}
-          placeholder={isDrawer ? "Chat..." : "Type guess here..."}
-          placeholderTextColor={"#333"}
-          onSubmitEditing={sendMessage}
+          placeholder={
+            isDrawer ? "Chat with players..." : "Type your guess here..."
+          }
+          placeholderTextColor="#999"
+          onSubmitEditing={handleSend}
         />
-        <TouchableOpacity onPress={sendMessage} style={styles.sendButton}>
-          <Text style={styles.sendButtonText}>Send</Text>
+        <TouchableOpacity onPress={handleSend} style={styles.sendButton}>
+          <Text style={styles.sendText}>Send</Text>
         </TouchableOpacity>
       </View>
     </KeyboardAvoidingView>
@@ -174,36 +201,58 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "white",
-    borderTopWidth: 2,
-    borderColor: "#333",
   },
-  chatArea: { flex: 1, padding: 10 },
-  messageRow: { flexDirection: "row", marginBottom: 4 },
+  list: {
+    flex: 1,
+  },
+  listContent: {
+    padding: 10,
+  },
+  messageRow: {
+    flexDirection: "row",
+    marginBottom: 6,
+    flexWrap: "wrap",
+  },
+  userName: {
+    fontWeight: "bold",
+    marginRight: 6,
+    color: "#333",
+  },
+  messageText: {
+    color: "#333",
+  },
   systemRow: {
-    backgroundColor: "#d4edda",
-    padding: 5,
+    backgroundColor: "#dcfce7", // Light green bg for correct guesses
+    padding: 4,
     borderRadius: 4,
-    justifyContent: "center",
   },
-  sender: { fontWeight: "bold", color: "#555" },
-  messageText: { color: "#333" },
-  systemText: { color: "#155724", fontWeight: "bold" },
-  inputArea: { flexDirection: "row", padding: 10, backgroundColor: "#f9f9f9" },
+  systemText: {
+    color: "#166534",
+    fontWeight: "bold",
+  },
+  inputContainer: {
+    flexDirection: "row",
+    padding: 10,
+    borderTopWidth: 1,
+    borderTopColor: "#eee",
+    alignItems: "center",
+  },
   input: {
     flex: 1,
-    borderWidth: 2,
-    borderColor: "#333",
+    backgroundColor: "#f5f5f5",
     borderRadius: 20,
     paddingHorizontal: 15,
     paddingVertical: 8,
-    backgroundColor: "white",
     marginRight: 10,
+    fontSize: 16,
   },
   sendButton: {
-    justifyContent: "center",
-    paddingHorizontal: 15,
-    backgroundColor: "#007AFF",
-    borderRadius: 20,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
   },
-  sendButtonText: { color: "white", fontWeight: "bold", fontSize: 16 },
+  sendText: {
+    color: "#3b82f6",
+    fontWeight: "600",
+    fontSize: 16,
+  },
 });

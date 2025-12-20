@@ -1,246 +1,197 @@
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import React from "react";
-import {
-  ScrollView,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-} from "react-native";
+import { ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
+
+interface DrawingToolsProps {
+  selectedColor: string;
+  onSelectColor: (color: string) => void;
+  strokeWidth: number;
+  onSelectStrokeWidth: (width: number) => void;
+  isEraser: boolean;
+  toggleEraser: () => void;
+  onClear: () => void;
+}
 
 const COLORS = [
   "#000000",
   "#FF0000",
-  "#2196F3",
-  "#4CAF50",
-  "#FFEB3B",
+  "#00FF00",
+  "#0000FF",
+  "#FFFF00",
+  "#FF00FF",
+  "#00FFFF",
+  "#FFA500",
+  "#800080",
+  "#A52A2A",
   "#FFFFFF",
-  "#9C27B0",
-  "#FF9800",
-  "#795548",
-  "#607D8B",
 ];
-const STROKES = [3, 8, 15];
-
-interface DrawingToolsProps {
-  selectedColor: string;
-  onColorSelect: (color: string) => void;
-  selectedStroke: number;
-  onStrokeSelect: (stroke: number) => void;
-  selectedTool: "pen" | "fill";
-  onToolSelect: (tool: "pen" | "fill") => void;
-  onClose: () => void; // Parent controls closing
-}
+const STROKES = [3, 6, 9, 12];
 
 export default function DrawingTools({
   selectedColor,
-  onColorSelect,
-  selectedStroke,
-  onStrokeSelect,
-  selectedTool,
-  onToolSelect,
-  onClose,
+  onSelectColor,
+  strokeWidth,
+  onSelectStrokeWidth,
+  isEraser,
+  toggleEraser,
+  onClear,
 }: DrawingToolsProps) {
+  const handleColorSelect = (color: string) => {
+    // If we are currently erasing, switch back to drawing mode when a color is picked
+    if (isEraser) {
+      toggleEraser();
+    }
+    onSelectColor(color);
+  };
+
   return (
-    <View style={styles.sidebarContainer}>
-      {/* Header / Close */}
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Tools</Text>
-        <TouchableOpacity onPress={onClose} style={styles.closeButton}>
-          <Text style={styles.closeIcon}>✕</Text>
-        </TouchableOpacity>
-      </View>
-
+    <View style={styles.container}>
+      {/* Colors */}
       <ScrollView
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.colorsContainer}
       >
-        {/* Tool Selector */}
-        <View style={styles.section}>
-          <Text style={styles.sectionLabel}>Mode</Text>
-          <View style={styles.row}>
+        {COLORS.map((color) => {
+          if (color === "#FFFFFF") return null; // Skip white in swatch list, handled by eraser
+          return (
             <TouchableOpacity
-              onPress={() => onToolSelect("pen")}
+              key={color}
               style={[
-                styles.toolBtn,
-                selectedTool === "pen" && styles.activeTool,
+                styles.colorSwatch,
+                { backgroundColor: color },
+                selectedColor === color && !isEraser && styles.selectedSwatch,
               ]}
-            >
-              <Text style={styles.icon}>✏️</Text>
-            </TouchableOpacity>
+              onPress={() => handleColorSelect(color)}
+            />
+          );
+        })}
+      </ScrollView>
+
+      {/* Tools Row */}
+      <View style={styles.toolsRow}>
+        {/* Stroke Sizes */}
+        <View style={styles.strokeContainer}>
+          {STROKES.map((width) => (
             <TouchableOpacity
-              onPress={() => onToolSelect("fill")}
+              key={width}
               style={[
-                styles.toolBtn,
-                selectedTool === "fill" && styles.activeTool,
+                styles.strokeButton,
+                strokeWidth === width && styles.selectedStroke,
               ]}
+              onPress={() => onSelectStrokeWidth(width)}
             >
-              <Text style={styles.icon}>🪣</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        <View style={styles.divider} />
-
-        {/* Stroke Selector */}
-        <View style={styles.section}>
-          <Text style={styles.sectionLabel}>Size</Text>
-          <View style={styles.rowWrap}>
-            {STROKES.map((s) => (
-              <TouchableOpacity
-                key={s}
-                onPress={() => onStrokeSelect(s)}
+              <View
                 style={[
-                  styles.strokeBtn,
-                  selectedStroke === s && styles.activeStrokeBtn,
-                ]}
-              >
-                <View
-                  style={[
-                    styles.strokeDot,
-                    {
-                      width: s + 4,
-                      height: s + 4,
-                      backgroundColor: selectedStroke === s ? "#fff" : "#333",
-                    },
-                  ]}
-                />
-              </TouchableOpacity>
-            ))}
-          </View>
-        </View>
-
-        <View style={styles.divider} />
-
-        {/* Color Palette */}
-        <View style={styles.section}>
-          <Text style={styles.sectionLabel}>Color</Text>
-          <View style={styles.colorGrid}>
-            {COLORS.map((c) => (
-              <TouchableOpacity
-                key={c}
-                onPress={() => onColorSelect(c)}
-                style={[
-                  styles.colorBtn,
-                  { backgroundColor: c },
-                  selectedColor === c && styles.activeColor,
+                  styles.strokeDot,
+                  {
+                    width: width > 15 ? 15 : width,
+                    height: width > 15 ? 15 : width,
+                    borderRadius: width / 2,
+                    backgroundColor: "#333",
+                  },
                 ]}
               />
-            ))}
-          </View>
+            </TouchableOpacity>
+          ))}
         </View>
-      </ScrollView>
+
+        {/* Actions */}
+        <View style={styles.actionsContainer}>
+          {/* Eraser Toggle */}
+          <TouchableOpacity
+            style={[styles.toolButton, isEraser && styles.activeTool]}
+            onPress={toggleEraser}
+          >
+            <MaterialCommunityIcons
+              name={isEraser ? "eraser" : "eraser-variant"}
+              size={22}
+              color={isEraser ? "#333" : "#666"}
+            />
+          </TouchableOpacity>
+
+          {/* Clear Canvas */}
+          <TouchableOpacity style={styles.toolButton} onPress={onClear}>
+            <Ionicons name="trash-outline" size={22} color="#FF6B6B" />
+          </TouchableOpacity>
+        </View>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  sidebarContainer: {
-    width: 100, // Fixed width that will push the canvas
-    height: "100%",
-    backgroundColor: "rgba(255, 255, 255, 0.95)",
-    borderLeftWidth: 1,
-    borderLeftColor: "#ddd",
-    padding: 10,
-    zIndex: 20,
-    elevation: 10,
+  container: {
+    paddingVertical: 10,
+    backgroundColor: "white",
+    borderTopWidth: 1,
+    borderTopColor: "#f0f0f0",
   },
-  header: {
+  colorsContainer: {
     flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
     marginBottom: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: "#eee",
-    paddingBottom: 5,
+    paddingHorizontal: 5,
+    maxHeight: 40,
   },
-  headerTitle: {
-    fontWeight: "bold",
-    color: "#333",
-    fontSize: 12,
-    textTransform: "uppercase",
-  },
-  closeButton: {
-    padding: 5,
-  },
-  closeIcon: {
-    fontSize: 18,
-    color: "#666",
-  },
-  scrollContent: {
-    paddingBottom: 20,
-  },
-  section: {
-    marginBottom: 15,
-  },
-  sectionLabel: {
-    fontSize: 10,
-    color: "#999",
-    marginBottom: 5,
-    textTransform: "uppercase",
-    fontWeight: "bold",
-  },
-  row: {
-    flexDirection: "row",
-    justifyContent: "space-around",
-  },
-  rowWrap: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    justifyContent: "space-around",
-    gap: 5,
-  },
-  divider: {
-    height: 1,
-    backgroundColor: "#eee",
-    marginVertical: 10,
-  },
-  toolBtn: {
-    padding: 8,
-    borderRadius: 8,
-    backgroundColor: "#f0f0f0",
-    alignItems: "center",
-    justifyContent: "center",
-    width: 36,
-    height: 36,
-  },
-  activeTool: {
-    backgroundColor: "#333",
-  },
-  icon: {
-    fontSize: 18,
-  },
-  strokeBtn: {
-    padding: 5,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "transparent",
-    alignItems: "center",
-    justifyContent: "center",
+  colorSwatch: {
     width: 30,
     height: 30,
-  },
-  activeStrokeBtn: {
-    backgroundColor: "#333",
-  },
-  strokeDot: {
-    borderRadius: 50,
-  },
-  colorGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 6,
-    justifyContent: "center",
-  },
-  colorBtn: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
+    borderRadius: 15,
+    marginHorizontal: 5,
     borderWidth: 1,
     borderColor: "#ddd",
   },
-  activeColor: {
+  selectedSwatch: {
     borderWidth: 2,
     borderColor: "#333",
-    transform: [{ scale: 1.2 }],
+    transform: [{ scale: 1.1 }],
+    zIndex: 10,
+  },
+  toolsRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 10,
+  },
+  strokeContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#f5f5f5",
+    borderRadius: 20,
+    padding: 4,
+  },
+  strokeButton: {
+    width: 32,
+    height: 32,
+    justifyContent: "center",
+    alignItems: "center",
+    borderRadius: 16,
+    marginHorizontal: 2,
+  },
+  selectedStroke: {
+    backgroundColor: "#e0e0e0",
+    borderWidth: 1,
+    borderColor: "#ccc",
+  },
+  strokeDot: {
+    backgroundColor: "black",
+  },
+  actionsContainer: {
+    flexDirection: "row",
+    gap: 12,
+  },
+  toolButton: {
+    width: 40,
+    height: 40,
+    justifyContent: "center",
+    alignItems: "center",
+    borderRadius: 20,
+    backgroundColor: "#f5f5f5",
+    borderWidth: 1,
+    borderColor: "#eee",
+  },
+  activeTool: {
+    backgroundColor: "#dbeafe", // Light blue tint
+    borderColor: "#3b82f6",
   },
 });
