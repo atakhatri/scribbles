@@ -1,3 +1,4 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
 import { onAuthStateChanged, User } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
@@ -32,6 +33,7 @@ export default function Index() {
   const [selectedRounds, setSelectedRounds] = useState(2);
   const [customRounds, setCustomRounds] = useState("");
   const [useCustomInput, setUseCustomInput] = useState(false);
+  const [hasSeenOnboarding, setHasSeenOnboarding] = useState(false);
 
   // 1. Listen for Auth State
   useEffect(() => {
@@ -45,15 +47,28 @@ export default function Index() {
           if (docSnap.exists()) {
             setUsername(docSnap.data().username);
           } else {
-            setUsername("Player");
+            setUsername(currentUser.displayName || "Player");
           }
         } catch (e) {
           console.error("Error fetching profile", e);
-          setUsername("Player");
+          setUsername(currentUser.displayName || "Player");
         }
       }
       setLoading(false);
     });
+
+    // Check onboarding status
+    const checkOnboarding = async () => {
+      try {
+        const value = await AsyncStorage.getItem("hasSeenOnboarding");
+        if (value === "true") {
+          setHasSeenOnboarding(true);
+        }
+      } catch (e) {
+        console.error("Error reading onboarding status", e);
+      }
+    };
+    checkOnboarding();
     return () => unsubscribe();
   }, []);
 
@@ -63,10 +78,10 @@ export default function Index() {
 
     if (useCustomInput) {
       const parsed = parseInt(customRounds);
-      if (isNaN(parsed) || parsed < 1 || parsed > 50) {
+      if (isNaN(parsed) || parsed < 1 || parsed > 20) {
         Alert.alert(
           "Invalid Rounds",
-          "Please enter a number between 1 and 50."
+          "Please enter a number between 1 and 20."
         );
         return;
       }
