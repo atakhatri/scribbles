@@ -1,19 +1,15 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
   addDoc,
-  arrayUnion,
   collection,
   deleteDoc,
   doc,
-  getDoc,
   getDocs,
   onSnapshot,
-  query,
   serverTimestamp,
   setDoc,
   Timestamp,
   updateDoc,
-  where,
   writeBatch,
 } from "firebase/firestore";
 import React, { useEffect, useRef, useState } from "react";
@@ -22,34 +18,18 @@ import {
   Animated,
   Clipboard,
   FlatList,
-  ImageBackground,
   Modal,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaProvider } from "react-native-safe-area-context";
+import { SafeAreaView } from "react-native-safe-area-context";
 import ChatWindow from "../../components/ChatWindow";
-import DrawingCanvas, {
-  DrawingCanvasRef,
-} from "../../components/DrawingCanvas";
+import DrawingCanvas from "../../components/DrawingCanvas";
+import { WORDS_POOL } from "../../components/words";
 import { auth, db } from "../../firebaseConfig";
 
-const WORDS_POOL = [
-  "CAT",
-  "DOG",
-  "PIZZA",
-  "SUN",
-  "CAR",
-  "HOUSE",
-  "TREE",
-  "BOOK",
-  "ROBOT",
-  "GHOST",
-  "ALIEN",
-  "DRAGON",
-];
 const SELECT_TIME = 15;
 const PLAY_TIME = 60;
 
@@ -67,7 +47,6 @@ export default function GameRoom() {
 
   // Game State
   const [drawerId, setDrawerId] = useState<string | null>(null);
-  const [hostId, setHostId] = useState<string | null>(null);
   const [currentWord, setCurrentWord] = useState<string>("");
   const [gameState, setGameState] = useState<
     "WAITING" | "SELECTING" | "PLAYING" | "GAME_OVER"
@@ -84,8 +63,6 @@ export default function GameRoom() {
 
   const [players, setPlayers] = useState<Player[]>([]);
   const [showSidebar, setShowSidebar] = useState(false);
-  const [showInviteView, setShowInviteView] = useState(false);
-  const [myFriends, setMyFriends] = useState<Player[]>([]);
   const [timeLeft, setTimeLeft] = useState(0);
 
   // Animation Values
@@ -94,19 +71,40 @@ export default function GameRoom() {
   const scaleAnim3 = useRef(new Animated.Value(0)).current;
 
   const isDrawer = currentUser?.uid === drawerId;
-  const isHost = hostId
-    ? hostId === currentUser?.uid
-    : players.length > 0 && players[0].id === currentUser?.uid;
+  const isHost = players.length > 0 && players[0].id === currentUser?.uid;
 
   const drawerIdRef = useRef(drawerId);
-  const hostIdRef = useRef(hostId);
-  const canvasRef = useRef<DrawingCanvasRef>(null);
   useEffect(() => {
     drawerIdRef.current = drawerId;
   }, [drawerId]);
+
+  // Dictionary Management
+  const availableWordsRef = useRef<string[]>(WORDS_POOL);
+
   useEffect(() => {
-    hostIdRef.current = hostId;
-  }, [hostId]);
+    const fetchDictionary = async () => {
+      try {
+        const res = await fetch(
+          "https://raw.githubusercontent.com/first20hours/google-10000-english/master/google-10000-english-no-swears.txt"
+        );
+        if (res.ok) {
+          const text = await res.text();
+          const words = text
+            .split("\n")
+            .map((w) => w.trim().toUpperCase())
+            .filter((w) => w.length >= 3 && w.length <= 12);
+
+          if (words.length > 1000) {
+            availableWordsRef.current = words;
+            console.log(`Loaded ${words.length} words from online dictionary.`);
+          }
+        }
+      } catch (e) {
+        console.log("Using offline word list fallback.");
+      }
+    };
+    fetchDictionary();
+  }, []);
 
   // 1. Manage Room Logic
   useEffect(() => {
@@ -116,17 +114,7 @@ export default function GameRoom() {
     const playerRef = doc(db, "rooms", roomId, "players", currentUser.uid);
 
     const joinRoom = async () => {
-      const roomSnap = await getDoc(roomRef);
-
-      if (!roomSnap.exists()) {
-        await setDoc(roomRef, {
-          active: true,
-          totalRounds: Number(rounds) || 2,
-          currentRound: 1,
-          turnIndex: 0,
-          hostId: currentUser.uid,
-        });
-      }
+      await setDoc(roomRef, {}, { merge: true });
 
       await setDoc(
         playerRef,
@@ -151,7 +139,6 @@ export default function GameRoom() {
       if (docSnapshot.exists()) {
         const data = docSnapshot.data();
         setDrawerId(data.drawerId);
-        if (data.hostId) setHostId(data.hostId);
         setCurrentWord(data.word || "");
         setGameState(data.gameState || "WAITING");
         setWordOptions(data.wordOptions || []);
@@ -187,10 +174,8 @@ export default function GameRoom() {
       snapshot.docChanges().forEach((change) => {
         if (change.type === "removed") {
           const leftPlayer = change.doc.data() as Player;
-          const isHostCheck = hostIdRef.current
-            ? hostIdRef.current === currentUser.uid
-            : activePlayers.length > 0 &&
-              activePlayers[0].id === currentUser.uid;
+          const isHostCheck =
+            activePlayers.length > 0 && activePlayers[0].id === currentUser.uid;
 
           if (isHostCheck) {
             addDoc(collection(db, "rooms", roomId, "messages"), {
@@ -221,6 +206,7 @@ export default function GameRoom() {
       const totalGuessers = players.length - 1;
       if (totalGuessers > 0 && guessedPlayers.length >= totalGuessers) {
         handleTimeUp();
+        return;
       }
     }
 
@@ -270,43 +256,6 @@ export default function GameRoom() {
     }
   }, [gameState]);
 
-  // 2.5 Fetch Friends for Invite
-  useEffect(() => {
-    if (showSidebar && showInviteView && currentUser) {
-      const fetchFriends = async () => {
-        try {
-          const userDoc = await getDoc(doc(db, "users", currentUser.uid));
-          if (userDoc.exists()) {
-            const friendIds = userDoc.data().friends || [];
-            // Filter out players already in room
-            const currentIds = players.map((p) => p.id);
-            const inviteable = friendIds.filter(
-              (id: string) => !currentIds.includes(id)
-            );
-
-            if (inviteable.length > 0) {
-              // Firestore 'in' limit is 10, taking first 10 for simplicity
-              const q = query(
-                collection(db, "users"),
-                where("__name__", "in", inviteable.slice(0, 10))
-              );
-              const snap = await getDocs(q);
-              const loadedFriends = snap.docs.map(
-                (d) => ({ id: d.id, ...d.data(), score: 0 } as Player)
-              );
-              setMyFriends(loadedFriends);
-            } else {
-              setMyFriends([]);
-            }
-          }
-        } catch (e) {
-          console.error("Error fetching friends", e);
-        }
-      };
-      fetchFriends();
-    }
-  }, [showSidebar, showInviteView, currentUser, players]);
-
   // 3. Actions
   const startGame = async () => {
     if (players.length < 1) return;
@@ -324,8 +273,10 @@ export default function GameRoom() {
     nextRound: number
   ) => {
     const options = [];
+    const pool = availableWordsRef.current;
     for (let i = 0; i < 3; i++)
       options.push(WORDS_POOL[Math.floor(Math.random() * WORDS_POOL.length)]);
+    options.push(pool[Math.floor(Math.random() * pool.length)]);
 
     const roomRef = doc(db, "rooms", roomId);
     await updateDoc(roomRef, {
@@ -376,28 +327,12 @@ export default function GameRoom() {
     }
   };
 
-  const handleInvite = async (friendId: string) => {
-    try {
-      await updateDoc(doc(db, "users", friendId), {
-        gameInvites: arrayUnion({
-          roomId,
-          inviterName: currentUser?.displayName || "Friend",
-          timestamp: Date.now(),
-        }),
-      });
-      Alert.alert("Success", "Invite sent!");
-    } catch (e) {
-      Alert.alert("Error", "Could not send invite");
-    }
-  };
-
   const clearBoard = async () => {
     const linesRef = collection(db, "rooms", roomId, "lines");
     const snapshot = await getDocs(linesRef);
     const batch = writeBatch(db);
     snapshot.docs.forEach((doc) => batch.delete(doc.ref));
     await batch.commit();
-    canvasRef.current?.resetHistory();
 
     const roomRef = doc(db, "rooms", roomId);
     await updateDoc(roomRef, { canvasColor: "#FFFFFF" });
@@ -410,17 +345,6 @@ export default function GameRoom() {
       } catch (e) {}
     }
     router.back();
-  };
-
-  const handlePlayAgain = async () => {
-    const batch = writeBatch(db);
-    players.forEach((p) => {
-      const pRef = doc(db, "rooms", roomId, "players", p.id);
-      batch.update(pRef, { score: 0 });
-    });
-    await batch.commit();
-
-    startGame();
   };
 
   const copyRoomId = () => {
@@ -449,100 +373,88 @@ export default function GameRoom() {
     const third = sortedPlayers[2];
 
     return (
-      <ImageBackground
-        source={require("../../assets/images/game_over.jpeg")}
-        style={styles.podiumBackground}
-      >
-        <View style={styles.podiumContainer}>
-          <Text style={styles.podiumTitle}>🏆 Game Over 🏆</Text>
-          <View style={styles.podiumStage}>
-            {second && (
-              <Animated.View
+      <View style={styles.podiumContainer}>
+        <Text style={styles.podiumTitle}>🏆 Final Results 🏆</Text>
+        <View style={styles.podiumStage}>
+          {second && (
+            <Animated.View
+              style={[
+                styles.podiumPillarContainer,
+                { transform: [{ scale: scaleAnim2 }] },
+              ]}
+            >
+              <View style={styles.podiumAvatar}>
+                <Text style={styles.avatarEmoji}>🥈</Text>
+              </View>
+              <Text style={styles.podiumName}>{second.username}</Text>
+              <View
                 style={[
-                  styles.podiumPillarContainer,
-                  { transform: [{ scale: scaleAnim2 }] },
+                  styles.podiumBar,
+                  { height: 100, backgroundColor: "#C0C0C0" },
                 ]}
               >
-                <View style={styles.podiumAvatar}>
-                  <Text style={styles.avatarEmoji}>🥈</Text>
-                </View>
-                <Text style={styles.podiumName}>{second.username}</Text>
-                <View
-                  style={[
-                    styles.podiumBar,
-                    { height: 100, backgroundColor: "#C0C0C0" },
-                  ]}
-                >
-                  <Text style={styles.podiumScore}>{second.score}</Text>
-                </View>
-              </Animated.View>
-            )}
-            {winner && (
-              <Animated.View
+                <Text style={styles.podiumScore}>{second.score}</Text>
+              </View>
+            </Animated.View>
+          )}
+          {winner && (
+            <Animated.View
+              style={[
+                styles.podiumPillarContainer,
+                { transform: [{ scale: scaleAnim1 }] },
+              ]}
+            >
+              <Text style={styles.fireworks}>🎆</Text>
+              <View style={[styles.podiumAvatar, styles.winnerAvatar]}>
+                <Text style={styles.avatarEmoji}>👑</Text>
+              </View>
+              <Text style={[styles.podiumName, styles.winnerName]}>
+                {winner.username}
+              </Text>
+              <View
                 style={[
-                  styles.podiumPillarContainer,
-                  { transform: [{ scale: scaleAnim1 }] },
+                  styles.podiumBar,
+                  { height: 150, backgroundColor: "#FFD700" },
                 ]}
               >
-                <Text style={styles.fireworks}>🎆</Text>
-                <View style={[styles.podiumAvatar, styles.winnerAvatar]}>
-                  <Text style={styles.avatarEmoji}>👑</Text>
-                </View>
-                <Text style={[styles.podiumName, styles.winnerName]}>
-                  {winner.username}
-                </Text>
-                <View
-                  style={[
-                    styles.podiumBar,
-                    { height: 150, backgroundColor: "#FFD700" },
-                  ]}
-                >
-                  <Text style={styles.podiumScore}>{winner.score}</Text>
-                </View>
-              </Animated.View>
-            )}
-            {third && (
-              <Animated.View
+                <Text style={styles.podiumScore}>{winner.score}</Text>
+              </View>
+            </Animated.View>
+          )}
+          {third && (
+            <Animated.View
+              style={[
+                styles.podiumPillarContainer,
+                { transform: [{ scale: scaleAnim3 }] },
+              ]}
+            >
+              <View style={styles.podiumAvatar}>
+                <Text style={styles.avatarEmoji}>🥉</Text>
+              </View>
+              <Text style={styles.podiumName}>{third.username}</Text>
+              <View
                 style={[
-                  styles.podiumPillarContainer,
-                  { transform: [{ scale: scaleAnim3 }] },
+                  styles.podiumBar,
+                  { height: 70, backgroundColor: "#CD7F32" },
                 ]}
               >
-                <View style={styles.podiumAvatar}>
-                  <Text style={styles.avatarEmoji}>🥉</Text>
-                </View>
-                <Text style={styles.podiumName}>{third.username}</Text>
-                <View
-                  style={[
-                    styles.podiumBar,
-                    { height: 70, backgroundColor: "#CD7F32" },
-                  ]}
-                >
-                  <Text style={styles.podiumScore}>{third.score}</Text>
-                </View>
-              </Animated.View>
-            )}
-          </View>
-          <View style={styles.podiumButtons}>
-            {isHost && (
-              <TouchableOpacity
-                style={styles.playAgainButton}
-                onPress={handlePlayAgain}
-              >
-                <Text style={styles.playAgainText}>Play Again</Text>
-              </TouchableOpacity>
-            )}
-            <TouchableOpacity style={styles.homeButton} onPress={handleLeave}>
-              <Text style={styles.homeButtonText}>Back to Home</Text>
-            </TouchableOpacity>
-          </View>
+                <Text style={styles.podiumScore}>{third.score}</Text>
+              </View>
+            </Animated.View>
+          )}
         </View>
-      </ImageBackground>
+        <TouchableOpacity style={styles.homeButton} onPress={handleLeave}>
+          <Text style={styles.homeButtonText}>Back to Home</Text>
+        </TouchableOpacity>
+      </View>
     );
   };
 
   return (
-    <SafeAreaProvider style={styles.container}>
+    <SafeAreaView
+      style={styles.container}
+      edges={["top", "bottom", "left", "right"]}
+    >
       {gameState === "GAME_OVER" ? (
         renderPodium()
       ) : (
@@ -594,22 +506,6 @@ export default function GameRoom() {
             <View style={styles.headerButtons}>
               {isDrawer && gameState === "PLAYING" && (
                 <TouchableOpacity
-                  onPress={() => canvasRef.current?.undo()}
-                  style={styles.undoButton}
-                >
-                  <Text style={styles.buttonText}>{"<-"}</Text>
-                </TouchableOpacity>
-              )}
-              {isDrawer && gameState === "PLAYING" && (
-                <TouchableOpacity
-                  onPress={() => canvasRef.current?.redo()}
-                  style={styles.undoButton}
-                >
-                  <Text style={styles.buttonText}>{"->"}</Text>
-                </TouchableOpacity>
-              )}
-              {isDrawer && gameState === "PLAYING" && (
-                <TouchableOpacity
                   onPress={clearBoard}
                   style={styles.clearButton}
                 >
@@ -621,12 +517,6 @@ export default function GameRoom() {
                 style={styles.leaveButton}
               >
                 <Text style={styles.buttonText}>Leave</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={() => canvasRef.current?.saveImage()}
-                style={styles.saveButton}
-              >
-                <Text style={styles.buttonText}>Save</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -654,7 +544,6 @@ export default function GameRoom() {
               canvasColor={canvasColor}
               onBackgroundChange={handleBackgroundChange}
               key={isDrawer ? "drawer" : "guesser"}
-              ref={canvasRef}
             />
           </View>
 
@@ -664,7 +553,6 @@ export default function GameRoom() {
               currentWord={currentWord}
               isDrawer={isDrawer}
               roundEndTime={roundEndTime}
-              drawerId={drawerId}
             />
           </View>
         </>
@@ -687,86 +575,39 @@ export default function GameRoom() {
                 <Text style={styles.closeButton}>✕</Text>
               </TouchableOpacity>
             </View>
-
-            {/* Sidebar Tabs */}
-            <View style={styles.sidebarTabs}>
-              <TouchableOpacity
-                onPress={() => setShowInviteView(false)}
-                style={[styles.tab, !showInviteView && styles.activeTab]}
-              >
-                <Text style={styles.tabText}>Players</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={() => setShowInviteView(true)}
-                style={[styles.tab, showInviteView && styles.activeTab]}
-              >
-                <Text style={styles.tabText}>Invite Friends</Text>
-              </TouchableOpacity>
-            </View>
-
-            {!showInviteView ? (
-              <FlatList
-                data={players}
-                keyExtractor={(item) => item.id}
-                renderItem={({ item }) => (
-                  <View
-                    style={[
-                      styles.playerRow,
-                      item.id === currentUser?.uid && styles.meRow,
-                    ]}
-                  >
-                    <View style={styles.avatar}>
-                      <Text style={styles.avatarText}>
-                        {item.username[0].toUpperCase()}
-                      </Text>
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.playerName}>
-                        {item.username}{" "}
-                        {item.id === currentUser?.uid ? "(You)" : ""}
-                      </Text>
-                      <Text style={styles.playerRole}>
-                        {item.id === drawerId ? "✏️ Drawing" : "👀 Guessing"}
-                      </Text>
-                    </View>
-                    <View style={styles.scoreBadge}>
-                      <Text style={styles.scoreText}>{item.score} pts</Text>
-                    </View>
-                    {guessedPlayers.includes(item.id) && (
-                      <Text style={{ marginLeft: 10, fontSize: 18 }}>✅</Text>
-                    )}
-                  </View>
-                )}
-              />
-            ) : (
-              <FlatList
-                data={myFriends}
-                keyExtractor={(item) => item.id}
-                ListEmptyComponent={
-                  <Text style={styles.emptyText}>
-                    No friends available to invite.
-                  </Text>
-                }
-                renderItem={({ item }) => (
-                  <View style={styles.playerRow}>
-                    <View style={styles.avatar}>
-                      <Text style={styles.avatarText}>
-                        {item.username[0].toUpperCase()}
-                      </Text>
-                    </View>
-                    <Text style={[styles.playerName, { flex: 1 }]}>
-                      {item.username}
+            <FlatList
+              data={players}
+              keyExtractor={(item) => item.id}
+              renderItem={({ item }) => (
+                <View
+                  style={[
+                    styles.playerRow,
+                    item.id === currentUser?.uid && styles.meRow,
+                  ]}
+                >
+                  <View style={styles.avatar}>
+                    <Text style={styles.avatarText}>
+                      {item.username[0].toUpperCase()}
                     </Text>
-                    <TouchableOpacity
-                      onPress={() => handleInvite(item.id)}
-                      style={styles.inviteBtn}
-                    >
-                      <Text style={styles.inviteBtnText}>Invite</Text>
-                    </TouchableOpacity>
                   </View>
-                )}
-              />
-            )}
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.playerName}>
+                      {item.username}{" "}
+                      {item.id === currentUser?.uid ? "(You)" : ""}
+                    </Text>
+                    <Text style={styles.playerRole}>
+                      {item.id === drawerId ? "✏️ Drawing" : "👀 Guessing"}
+                    </Text>
+                  </View>
+                  <View style={styles.scoreBadge}>
+                    <Text style={styles.scoreText}>{item.score} pts</Text>
+                  </View>
+                  {guessedPlayers.includes(item.id) && (
+                    <Text style={{ marginLeft: 10, fontSize: 18 }}>✅</Text>
+                  )}
+                </View>
+              )}
+            />
           </View>
           <TouchableOpacity
             style={styles.modalClickAway}
@@ -800,7 +641,7 @@ export default function GameRoom() {
           </View>
         </View>
       </Modal>
-    </SafeAreaProvider>
+    </SafeAreaView>
   );
 }
 
@@ -890,20 +731,8 @@ const styles = StyleSheet.create({
     borderRadius: 20,
   },
   startButtonText: { color: "white", fontWeight: "bold" },
-  undoButton: {
-    backgroundColor: "#4a90e2",
-    padding: 8,
-    width: 40,
-    borderRadius: 6,
-    justifyContent: "center",
-    alignItems: "center",
-    fontSize: 18,
-    fontWeight: "bold",
-    color: "white",
-  },
   clearButton: { backgroundColor: "#ffaa00", padding: 8, borderRadius: 6 },
   leaveButton: { backgroundColor: "#ff4444", padding: 8, borderRadius: 6 },
-  saveButton: { backgroundColor: "#4caf50", padding: 8, borderRadius: 6 },
   buttonText: { color: "white", fontWeight: "bold", fontSize: 12 },
 
   canvasArea: { height: "55%", width: "100%" },
@@ -936,28 +765,6 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
     marginBottom: 20,
-  },
-  sidebarTabs: {
-    flexDirection: "row",
-    marginBottom: 10,
-    borderBottomWidth: 1,
-    borderColor: "#eee",
-  },
-  tab: { flex: 1, paddingVertical: 10, alignItems: "center" },
-  activeTab: { borderBottomWidth: 2, borderColor: "#4a90e2" },
-  tabText: { fontWeight: "bold", color: "#333" },
-  inviteBtn: {
-    backgroundColor: "#4caf50",
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 6,
-  },
-  inviteBtnText: { color: "white", fontWeight: "bold", fontSize: 12 },
-  emptyText: {
-    textAlign: "center",
-    color: "#999",
-    marginTop: 20,
-    fontStyle: "italic",
   },
   sidebarTitle: { fontSize: 24, fontWeight: "bold", color: "#333" },
   closeButton: { fontSize: 24, color: "#666" },
@@ -1015,14 +822,9 @@ const styles = StyleSheet.create({
   // Podium Styles
   podiumContainer: {
     flex: 1,
-    backgroundColor: "rgba(0, 0, 0, 0.25)",
+    backgroundColor: "#4a90e2",
     justifyContent: "center",
     alignItems: "center",
-  },
-  podiumBackground: {
-    flex: 1,
-    resizeMode: "cover",
-    justifyContent: "center",
   },
   podiumTitle: {
     fontSize: 32,
@@ -1035,9 +837,7 @@ const styles = StyleSheet.create({
     alignItems: "flex-end",
     gap: 10,
     height: 300,
-    paddingBottom: 0,
-    borderBottomColor: "#333",
-    borderBottomWidth: 2,
+    paddingBottom: 20,
   },
   podiumPillarContainer: { alignItems: "center" },
   podiumBar: {
@@ -1046,11 +846,7 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 10,
     justifyContent: "flex-start",
     alignItems: "center",
-    paddingTop: 15,
-    paddingBottom: 10,
-    borderColor: "#333",
-    borderWidth: 2,
-    borderBottomColor: "transparent",
+    paddingTop: 10,
   },
   podiumAvatar: {
     width: 60,
@@ -1069,48 +865,16 @@ const styles = StyleSheet.create({
     borderColor: "#FFD700",
   },
   avatarEmoji: { fontSize: 30 },
-  podiumName: {
-    color: "white",
-    fontSize: 16,
-    fontWeight: "bold",
-    marginBottom: 5,
-  },
-  winnerName: {
-    fontSize: 20,
-    color: "#ffd500ff",
-    fontWeight: "bold",
-    textShadowColor: "rgba(0, 0, 0, 0.75)",
-    textShadowOffset: { width: -1, height: 1 },
-    textShadowRadius: 10,
-  },
+  podiumName: { color: "white", fontWeight: "bold", marginBottom: 5 },
+  winnerName: { fontSize: 20, color: "#FFD700" },
   podiumScore: { color: "white", fontWeight: "bold", fontSize: 18 },
-  fireworks: { fontSize: 40, position: "absolute", top: -55 },
-  podiumButtons: {
-    marginTop: 50,
-    width: "100%",
-    alignItems: "center",
-    gap: 15,
-  },
+  fireworks: { fontSize: 40, position: "absolute", top: -60 },
   homeButton: {
-    backgroundColor: "#33333331",
+    marginTop: 50,
+    backgroundColor: "white",
     paddingHorizontal: 30,
     paddingVertical: 15,
     borderRadius: 25,
-    minWidth: 200,
-    alignItems: "center",
-    borderColor: "#4a90e2",
-    borderWidth: 2,
   },
-  homeButtonText: { color: "#eee", fontWeight: "bold", fontSize: 18 },
-  playAgainButton: {
-    backgroundColor: "#ff9800",
-    paddingHorizontal: 30,
-    paddingVertical: 15,
-    borderRadius: 25,
-    minWidth: 200,
-    alignItems: "center",
-    borderColor: "#333",
-    borderWidth: 2,
-  },
-  playAgainText: { color: "#333", fontWeight: "bold", fontSize: 18 },
+  homeButtonText: { color: "#4a90e2", fontWeight: "bold", fontSize: 18 },
 });

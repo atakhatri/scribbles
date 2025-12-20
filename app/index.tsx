@@ -3,9 +3,11 @@ import { useRouter } from "expo-router";
 import { onAuthStateChanged, User } from "firebase/auth";
 import {
   arrayRemove,
+  arrayUnion,
   doc,
   getDoc,
   onSnapshot,
+  setDoc,
   updateDoc,
 } from "firebase/firestore";
 import React, { useEffect, useState } from "react";
@@ -23,8 +25,8 @@ import {
 } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { auth, db } from "../firebaseConfig";
-// Generate numbers 1-20 for the wheel
-const ROUND_OPTIONS = Array.from({ length: 20 }, (_, i) => i + 1);
+// Generate numbers 2-20 for the wheel
+const ROUND_OPTIONS = Array.from({ length: 19 }, (_, i) => i + 2);
 
 export default function Index() {
   const router = useRouter();
@@ -120,7 +122,7 @@ export default function Index() {
   };
 
   // 2. Navigation Functions
-  const handleCreateRoom = () => {
+  const handleCreateRoom = async () => {
     let roundsToPlay = selectedRounds;
 
     if (useCustomInput) {
@@ -136,23 +138,70 @@ export default function Index() {
     }
 
     const randomCode = Math.random().toString(36).substring(2, 6).toUpperCase();
-    setShowRoundModal(false);
-    // Reset modal state
-    setCustomRounds("");
-    setUseCustomInput(false);
 
-    router.push({
-      pathname: "/game/[id]",
-      params: { id: randomCode, rounds: roundsToPlay },
-    });
+    if (!user) return;
+
+    try {
+      await setDoc(doc(db, "rooms", randomCode), {
+        status: "waiting",
+        active: true,
+        currentDrawer: user.uid,
+        currentWord: "",
+        currentRound: 1,
+        totalRounds: roundsToPlay,
+        turnIndex: 0,
+        scores: { [user.uid]: 0 },
+        players: [user.uid],
+        hostId: user.uid,
+        guesses: [],
+        createdAt: new Date().toISOString(),
+      });
+
+      setShowRoundModal(false);
+      // Reset modal state
+      setCustomRounds("");
+      setUseCustomInput(false);
+
+      router.push({
+        pathname: "/game/[id]",
+        params: { id: randomCode, rounds: roundsToPlay.toString() },
+      });
+    } catch (error) {
+      console.error("Create room error:", error);
+      Alert.alert("Error", "Failed to create room");
+    }
   };
 
-  const joinRoom = () => {
+  const joinRoom = async () => {
     if (roomCode.trim().length === 0) {
       Alert.alert("Required", "Please enter a room code first.");
       return;
     }
-    router.push(`/game/${roomCode.toUpperCase()}`);
+    if (!user) return;
+
+    const code = roomCode.toUpperCase();
+    try {
+      const roomRef = doc(db, "rooms", code);
+      const roomSnap = await getDoc(roomRef);
+
+      if (!roomSnap.exists()) {
+        Alert.alert("Error", "Room not found");
+        return;
+      }
+
+      const data = roomSnap.data();
+      if (!data.players.includes(user.uid)) {
+        await updateDoc(roomRef, {
+          players: arrayUnion(user.uid),
+          [`scores.${user.uid}`]: 0,
+        });
+      }
+
+      router.push(`/game/${code}`);
+    } catch (error) {
+      console.error("Join room error:", error);
+      Alert.alert("Error", "Failed to join room");
+    }
   };
 
   if (loading) {
@@ -249,7 +298,7 @@ export default function Index() {
                               selectedRounds === r && styles.selectedItemText,
                             ]}
                           >
-                            {r}
+                            {r + 1}
                           </Text>
                         </View>
                       ))}

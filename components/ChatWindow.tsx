@@ -36,7 +36,6 @@ interface ChatProps {
   currentWord: string;
   isDrawer: boolean;
   roundEndTime: number | null; // New prop for scoring
-  drawerId: string | null;
 }
 
 export default function ChatWindow({
@@ -44,7 +43,6 @@ export default function ChatWindow({
   currentWord,
   isDrawer,
   roundEndTime,
-  drawerId,
 }: ChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState("");
@@ -99,14 +97,6 @@ export default function ChatWindow({
         // A. Update Player Score
         const playerRef = doc(db, "rooms", roomId, "players", user.uid);
         await updateDoc(playerRef, { score: increment(points) });
-
-        // A.2 Update Drawer Score
-        if (drawerId) {
-          const drawerRef = doc(db, "rooms", roomId, "players", drawerId);
-          await updateDoc(drawerRef, {
-            score: increment(Math.ceil(points / 2)),
-          });
-        }
 
         // B. Mark as "Guessed"
         const roomRef = doc(db, "rooms", roomId);
