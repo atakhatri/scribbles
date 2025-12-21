@@ -96,9 +96,9 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255, 255, 255, 0)", // Semi-transparent overlay
   },
   title: {
-    fontSize: 32,
+    fontSize: 40,
     fontWeight: "bold",
-    color: "black",
+    color: "#0004ffff",
     marginBottom: 30,
     textAlign: "center",
   },
@@ -119,5 +119,11 @@ const styles = StyleSheet.create({
   },
   buttonText: { color: "white", fontWeight: "bold", fontSize: 16 },
   linkButton: { marginTop: 20, alignItems: "center", marginBottom: 5 },
-  linkText: { color: "black", opacity: 0.9, fontSize: 16, fontWeight: "bold" },
+  linkText: {
+    color: "blue",
+    opacity: 1,
+    fontSize: 18,
+    fontWeight: "bold",
+    textDecorationLine: "underline",
+  },
 });

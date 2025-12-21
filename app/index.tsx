@@ -6,6 +6,7 @@ import {
   doc,
   getDoc,
   onSnapshot,
+  setDoc,
   updateDoc,
 } from "firebase/firestore";
 import React, { useEffect, useState } from "react";
@@ -120,7 +121,7 @@ export default function Index() {
   };
 
   // 2. Navigation Functions
-  const handleCreateRoom = () => {
+  const handleCreateRoom = async () => {
     let roundsToPlay = selectedRounds;
 
     if (useCustomInput) {
@@ -136,15 +137,29 @@ export default function Index() {
     }
 
     const randomCode = Math.random().toString(36).substring(2, 6).toUpperCase();
-    setShowRoundModal(false);
-    // Reset modal state
-    setCustomRounds("");
-    setUseCustomInput(false);
 
-    router.push({
-      pathname: "/game/[id]",
-      params: { id: randomCode, rounds: roundsToPlay },
-    });
+    try {
+      if (!user) return;
+
+      await setDoc(doc(db, "games", randomCode), {
+        status: "waiting",
+        currentDrawer: user.uid,
+        currentWord: "",
+        round: 1,
+        maxRounds: roundsToPlay,
+        scores: { [user.uid]: 0 },
+        players: [user.uid],
+        hostId: user.uid,
+        guesses: [],
+      });
+
+      setShowRoundModal(false);
+      setCustomRounds("");
+      setUseCustomInput(false);
+      router.push(`/game/${randomCode}`);
+    } catch (error) {
+      Alert.alert("Error", "Failed to create game room");
+    }
   };
 
   const joinRoom = () => {
@@ -365,7 +380,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "transparent" },
   containerTransparent: {
     flex: 1,
-    backgroundColor: "rgba(255, 247, 225, 0.7)",
+    backgroundColor: "rgba(255, 247, 225, 0.5)",
   },
   backgroundImage: { flex: 1 },
   centerContainer: { flex: 1, justifyContent: "center", alignItems: "center" },

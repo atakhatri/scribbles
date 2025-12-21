@@ -3,6 +3,7 @@ import React, {
   forwardRef,
   useEffect,
   useImperativeHandle,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -17,6 +18,7 @@ import { db } from "../firebaseConfig";
 
 export interface DrawingCanvasRef {
   clear: () => void;
+  undo: () => void;
 }
 
 interface DrawingCanvasProps {
@@ -62,46 +64,60 @@ const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
           }
         }
       },
+      undo: async () => {
+        if (isDrawer && paths.length > 0) {
+          const newPaths = paths.slice(0, -1);
+          try {
+            await updateDoc(doc(db, "games", gameId), {
+              paths: newPaths,
+            });
+          } catch (e) {
+            console.error("Error undoing:", e);
+          }
+        }
+      },
     }));
 
-    const panResponder = useRef(
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => isDrawer,
-        onMoveShouldSetPanResponder: () => isDrawer,
-        onPanResponderGrant: (evt: GestureResponderEvent) => {
-          const { locationX, locationY } = evt.nativeEvent;
-          const startPath = `M${locationX},${locationY}`;
-          currentPathRef.current = startPath;
-          setCurrentPath(startPath);
-        },
-        onPanResponderMove: (evt: GestureResponderEvent) => {
-          const { locationX, locationY } = evt.nativeEvent;
-          const newPoint = ` L${locationX},${locationY}`;
-          currentPathRef.current += newPoint;
-          setCurrentPath(currentPathRef.current);
-        },
-        onPanResponderRelease: async () => {
-          if (currentPathRef.current) {
-            const newPathData = {
-              d: currentPathRef.current,
-              stroke: selectedColor,
-              strokeWidth: strokeWidth,
-            };
+    const panResponder = useMemo(
+      () =>
+        PanResponder.create({
+          onStartShouldSetPanResponder: () => isDrawer,
+          onMoveShouldSetPanResponder: () => isDrawer,
+          onPanResponderGrant: (evt: GestureResponderEvent) => {
+            const { locationX, locationY } = evt.nativeEvent;
+            const startPath = `M${locationX},${locationY}`;
+            currentPathRef.current = startPath;
+            setCurrentPath(startPath);
+          },
+          onPanResponderMove: (evt: GestureResponderEvent) => {
+            const { locationX, locationY } = evt.nativeEvent;
+            const newPoint = ` L${locationX},${locationY}`;
+            currentPathRef.current += newPoint;
+            setCurrentPath(currentPathRef.current);
+          },
+          onPanResponderRelease: async () => {
+            if (currentPathRef.current) {
+              const newPathData = {
+                d: currentPathRef.current,
+                stroke: selectedColor,
+                strokeWidth: strokeWidth,
+              };
 
-            try {
-              await updateDoc(doc(db, "games", gameId), {
-                paths: arrayUnion(JSON.stringify(newPathData)),
-              });
-            } catch (error) {
-              console.error("Error saving path:", error);
+              try {
+                await updateDoc(doc(db, "games", gameId), {
+                  paths: arrayUnion(JSON.stringify(newPathData)),
+                });
+              } catch (error) {
+                console.error("Error saving path:", error);
+              }
+
+              setCurrentPath("");
+              currentPathRef.current = "";
             }
-
-            setCurrentPath("");
-            currentPathRef.current = "";
-          }
-        },
-      })
-    ).current;
+          },
+        }),
+      [isDrawer, selectedColor, strokeWidth, gameId]
+    );
 
     return (
       <View style={styles.container} {...panResponder.panHandlers}>

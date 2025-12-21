@@ -1,4 +1,6 @@
+import { DefaultTheme, ThemeProvider } from "@react-navigation/native";
 import { Stack, useRouter, useSegments } from "expo-router";
+import { StatusBar } from "expo-status-bar";
 import { onAuthStateChanged, User } from "firebase/auth";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, View } from "react-native";
@@ -25,8 +27,9 @@ export default function RootLayout() {
     if (initializing) return;
 
     const inAuthGroup = segments[0] === "auth";
+    const isLanding = segments[0] === undefined;
 
-    if (!user && !inAuthGroup) {
+    if (!user && !inAuthGroup && !isLanding) {
       // If user is not signed in and the current path is not in the auth group,
       // redirect to the login page.
       router.replace("/auth/login");
@@ -46,13 +49,16 @@ export default function RootLayout() {
   }
 
   return (
-    <Stack screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="index" />
-      <Stack.Screen name="auth/login" />
-      <Stack.Screen name="auth/register" />
-      <Stack.Screen name="game/[id]" />
-      <Stack.Screen name="profile" />
-      <Stack.Screen name="friends" />
-    </Stack>
+    <ThemeProvider value={DefaultTheme}>
+      <StatusBar style="dark" />
+      <Stack screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="index" />
+        <Stack.Screen name="auth/login" />
+        <Stack.Screen name="auth/register" />
+        <Stack.Screen name="game/[id]" />
+        <Stack.Screen name="profile" />
+        <Stack.Screen name="friends" />
+      </Stack>
+    </ThemeProvider>
   );
 }

@@ -1,6 +1,14 @@
-import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
-import React from "react";
-import { ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+import React, { useState } from "react";
+import {
+  Modal,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from "react-native";
 
 interface DrawingToolsProps {
   selectedColor: string;
@@ -10,6 +18,7 @@ interface DrawingToolsProps {
   isEraser: boolean;
   toggleEraser: () => void;
   onClear: () => void;
+  onUndo: () => void;
 }
 
 const COLORS = [
@@ -35,9 +44,12 @@ export default function DrawingTools({
   isEraser,
   toggleEraser,
   onClear,
+  onUndo,
 }: DrawingToolsProps) {
+  const [showColorPicker, setShowColorPicker] = useState(false);
+  const [customHex, setCustomHex] = useState(selectedColor);
+
   const handleColorSelect = (color: string) => {
-    // If we are currently erasing, switch back to drawing mode when a color is picked
     if (isEraser) {
       toggleEraser();
     }
@@ -53,7 +65,6 @@ export default function DrawingTools({
         style={styles.colorsContainer}
       >
         {COLORS.map((color) => {
-          if (color === "#FFFFFF") return null; // Skip white in swatch list, handled by eraser
           return (
             <TouchableOpacity
               key={color}
@@ -66,6 +77,17 @@ export default function DrawingTools({
             />
           );
         })}
+
+        {/* Custom Color Picker Button */}
+        <TouchableOpacity
+          style={[styles.colorSwatch, styles.addColorButton]}
+          onPress={() => {
+            setCustomHex(selectedColor);
+            setShowColorPicker(true);
+          }}
+        >
+          <Ionicons name="color-palette-outline" size={18} color="#333" />
+        </TouchableOpacity>
       </ScrollView>
 
       {/* Tools Row */}
@@ -98,7 +120,7 @@ export default function DrawingTools({
 
         {/* Actions */}
         <View style={styles.actionsContainer}>
-          {/* Eraser Toggle */}
+          {/* Eraser Toggle
           <TouchableOpacity
             style={[styles.toolButton, isEraser && styles.activeTool]}
             onPress={toggleEraser}
@@ -108,6 +130,11 @@ export default function DrawingTools({
               size={22}
               color={isEraser ? "#333" : "#666"}
             />
+          </TouchableOpacity> */}
+
+          {/* Undo Button */}
+          <TouchableOpacity style={styles.toolButton} onPress={onUndo}>
+            <Ionicons name="arrow-undo-outline" size={22} color="#333" />
           </TouchableOpacity>
 
           {/* Clear Canvas */}
@@ -116,6 +143,48 @@ export default function DrawingTools({
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* Custom Color Modal */}
+      <Modal
+        visible={showColorPicker}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowColorPicker(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Custom Color</Text>
+            <View
+              style={[styles.colorPreview, { backgroundColor: customHex }]}
+            />
+            <TextInput
+              style={styles.hexInput}
+              value={customHex}
+              onChangeText={setCustomHex}
+              placeholder="#000000"
+              autoCapitalize="characters"
+              maxLength={7}
+            />
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={styles.modalBtn}
+                onPress={() => setShowColorPicker(false)}
+              >
+                <Text style={styles.btnText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalBtn, styles.confirmBtn]}
+                onPress={() => {
+                  handleColorSelect(customHex);
+                  setShowColorPicker(false);
+                }}
+              >
+                <Text style={[styles.btnText, { color: "white" }]}>Select</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -193,5 +262,73 @@ const styles = StyleSheet.create({
   activeTool: {
     backgroundColor: "#dbeafe", // Light blue tint
     borderColor: "#3b82f6",
+  },
+  addColorButton: {
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#f9f9f9",
+    borderStyle: "dashed",
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  modalContent: {
+    backgroundColor: "white",
+    padding: 20,
+    borderRadius: 16,
+    width: "80%",
+    alignItems: "center",
+    elevation: 5,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: "bold",
+    marginBottom: 15,
+    color: "#333",
+  },
+  colorPreview: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    marginBottom: 15,
+    borderWidth: 1,
+    borderColor: "#ddd",
+    elevation: 2,
+  },
+  hexInput: {
+    width: "100%",
+    borderWidth: 1,
+    borderColor: "#ddd",
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 20,
+    fontSize: 16,
+    textAlign: "center",
+    color: "#333",
+    backgroundColor: "#f9f9f9",
+  },
+  modalActions: {
+    flexDirection: "row",
+    gap: 10,
+    width: "100%",
+    justifyContent: "center",
+  },
+  modalBtn: {
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 8,
+    backgroundColor: "#f0f0f0",
+    minWidth: 100,
+    alignItems: "center",
+  },
+  confirmBtn: {
+    backgroundColor: "#333",
+  },
+  btnText: {
+    fontWeight: "600",
+    color: "#333",
   },
 });
