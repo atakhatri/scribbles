@@ -1,24 +1,10 @@
+import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import {
-  addDoc,
-  collection,
-  deleteDoc,
-  doc,
-  getDocs,
-  onSnapshot,
-  serverTimestamp,
-  setDoc,
-  Timestamp,
-  updateDoc,
-  writeBatch,
-} from "firebase/firestore";
+import { arrayUnion, doc, onSnapshot, updateDoc } from "firebase/firestore";
 import React, { useEffect, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
-  Animated,
-  Clipboard,
-  FlatList,
-  Modal,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -26,855 +12,577 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import ChatWindow from "../../components/ChatWindow";
-import DrawingCanvas from "../../components/DrawingCanvas";
-import { WORDS_POOL } from "../../components/words";
+import DrawingCanvas from "../../components/DrawingCanvas"; // Removed named import that might fail
+import DrawingTools from "../../components/DrawingTools";
 import { auth, db } from "../../firebaseConfig";
 
-const SELECT_TIME = 15;
-const PLAY_TIME = 60;
-
-interface Player {
-  id: string;
-  username: string;
-  score: number;
+// Local definition to fix type errors if the component doesn't export it
+interface CanvasRef {
+  clear: () => void;
 }
 
-export default function GameRoom() {
-  const { id, rounds } = useLocalSearchParams();
+// --- FALLBACK WORD DICTIONARY ---
+const FALLBACK_WORD_LIST = [
+  "apple",
+  "banana",
+  "house",
+  "tree",
+  "ocean",
+  "chair",
+  "table",
+  "phone",
+  "mouse",
+  "pizza",
+  "ghost",
+  "robot",
+  "cloud",
+  "storm",
+  "beach",
+  "party",
+  "music",
+  "dance",
+  "clock",
+  "train",
+  "plane",
+  "smile",
+  "heart",
+  "stars",
+  "horse",
+  "snake",
+  "bread",
+  "water",
+  "light",
+  "dream",
+  "space",
+  "earth",
+  "world",
+  "candy",
+  "cakes",
+  "river",
+  "mount",
+  "shoes",
+  "shirt",
+  "pants",
+  "socks",
+  "glass",
+  "spoon",
+  "knife",
+  "plate",
+  "truck",
+  "cycle",
+  "grass",
+  "flower",
+  "books",
+  "paper",
+  "pen",
+  "pencil",
+  "ruler",
+  "brush",
+  "paint",
+  "color",
+  "sound",
+  "voice",
+  "happy",
+  "angry",
+  "funny",
+  "joker",
+  "king",
+  "queen",
+  "chess",
+  "games",
+  "video",
+  "radio",
+  "alert",
+  "brick",
+  "stone",
+  "metal",
+  "wood",
+  "fire",
+  "flame",
+  "smoke",
+  "steam",
+  "frost",
+  "snow",
+  "winter",
+  "summer",
+  "spring",
+  "autumn",
+  "leaves",
+  "roots",
+  "seeds",
+  "fruit",
+  "berry",
+  "melon",
+  "lemon",
+  "grape",
+  "peach",
+  "mango",
+  "onion",
+  "carrot",
+  "potato",
+  "tomato",
+  "salad",
+  "lunch",
+  "dinner",
+  "snack",
+  "drink",
+  "juice",
+  "coffee",
+  "sugar",
+  "spice",
+  "honey",
+  "butter",
+  "toast",
+  "bacon",
+  "eggs",
+  "cheese",
+  "cream",
+  "yogurt",
+  "cookie",
+  "donut",
+  "bagel",
+  "waffle",
+  "pasta",
+  "sushi",
+  "tacos",
+  "curry",
+  "soup",
+  "stew",
+  "roast",
+  "grill",
+  "fry",
+  "bake",
+  "boil",
+  "swim",
+  "jump",
+  "walk",
+  "run",
+  "climb",
+  "slide",
+  "swing",
+  "skate",
+  "board",
+  "surf",
+  "dive",
+  "float",
+  "sink",
+  "fly",
+  "soar",
+  "drive",
+  "ride",
+  "steer",
+  "brake",
+  "crash",
+  "park",
+  "stop",
+  "go",
+  "slow",
+  "fast",
+  "speed",
+  "race",
+  "win",
+  "lose",
+  "draw",
+  "doctor",
+  "nurse",
+  "pilot",
+  "chef",
+  "artist",
+  "actor",
+  "singer",
+  "dancer",
+  "writer",
+  "judge",
+  "lawyer",
+  "police",
+  "guard",
+  "thief",
+  "spy",
+  "hero",
+  "enemy",
+  "friend",
+  "family",
+  "baby",
+  "child",
+  "adult",
+  "elder",
+  "human",
+  "alien",
+  "magic",
+  "witch",
+  "wizard",
+  "dragon",
+  "fairy",
+  "elf",
+  "giant",
+  "dwarf",
+  "troll",
+  "beast",
+  "shark",
+  "whale",
+  "dolphin",
+  "eagle",
+  "hawk",
+  "owl",
+  "bat",
+  "crow",
+  "duck",
+  "swan",
+  "frog",
+  "toad",
+  "turtle",
+  "crab",
+  "fish",
+  "seal",
+  "bear",
+  "wolf",
+  "fox",
+  "deer",
+  "moose",
+  "elk",
+  "bison",
+  "sheep",
+  "goat",
+  "pig",
+  "cow",
+  "bull",
+  "cat",
+  "dog",
+  "pet",
+  "vet",
+  "zoo",
+  "wild",
+  "tame",
+  "circus",
+  "fair",
+  "park",
+  "shop",
+  "mall",
+  "bank",
+  "post",
+  "mail",
+  "stamp",
+  "letter",
+];
+
+type GameState = {
+  status: "waiting" | "playing" | "finished";
+  currentDrawer: string;
+  currentWord: string;
+  round: number;
+  maxRounds: number;
+  scores: Record<string, number>;
+  players: string[];
+  hostId: string;
+  guesses: string[];
+};
+
+export default function GameScreen() {
+  const { id } = useLocalSearchParams();
   const router = useRouter();
-  const roomId = Array.isArray(id) ? id[0] : id;
-  const currentUser = auth.currentUser;
+  const [gameState, setGameState] = useState<GameState | null>(null);
+  const [currentUser, setCurrentUser] = useState(auth.currentUser);
+  const [timeLeft, setTimeLeft] = useState(60);
+  const [selectedColor, setSelectedColor] = useState("#000000");
+  const [strokeWidth, setStrokeWidth] = useState(3);
+  const [isEraser, setIsEraser] = useState(false);
+  const [allWords, setAllWords] = useState<string[]>(FALLBACK_WORD_LIST);
 
-  // Game State
-  const [drawerId, setDrawerId] = useState<string | null>(null);
-  const [currentWord, setCurrentWord] = useState<string>("");
-  const [gameState, setGameState] = useState<
-    "WAITING" | "SELECTING" | "PLAYING" | "GAME_OVER"
-  >("WAITING");
-  const [roundEndTime, setRoundEndTime] = useState<number | null>(null);
-  const [wordOptions, setWordOptions] = useState<string[]>([]);
-  const [guessedPlayers, setGuessedPlayers] = useState<string[]>([]);
-  const [canvasColor, setCanvasColor] = useState<string>("#FFFFFF");
+  // Use local interface or any to avoid import errors
+  const canvasRef = useRef<any>(null);
 
-  // Round Tracking
-  const [currentRound, setCurrentRound] = useState(1);
-  const [totalRounds, setTotalRounds] = useState(Number(rounds) || 2);
-  const [turnIndex, setTurnIndex] = useState(0);
-
-  const [players, setPlayers] = useState<Player[]>([]);
-  const [showSidebar, setShowSidebar] = useState(false);
-  const [timeLeft, setTimeLeft] = useState(0);
-
-  // Animation Values
-  const scaleAnim1 = useRef(new Animated.Value(0)).current;
-  const scaleAnim2 = useRef(new Animated.Value(0)).current;
-  const scaleAnim3 = useRef(new Animated.Value(0)).current;
-
-  const isDrawer = currentUser?.uid === drawerId;
-  const isHost = players.length > 0 && players[0].id === currentUser?.uid;
-
-  const drawerIdRef = useRef(drawerId);
+  // --- FETCH ONLINE WORD LIST ---
   useEffect(() => {
-    drawerIdRef.current = drawerId;
-  }, [drawerId]);
-
-  // Dictionary Management
-  const availableWordsRef = useRef<string[]>(WORDS_POOL);
-
-  useEffect(() => {
-    const fetchDictionary = async () => {
+    const fetchWords = async () => {
       try {
-        const res = await fetch(
+        const response = await fetch(
           "https://raw.githubusercontent.com/first20hours/google-10000-english/master/google-10000-english-no-swears.txt"
         );
-        if (res.ok) {
-          const text = await res.text();
-          const words = text
-            .split("\n")
-            .map((w) => w.trim().toUpperCase())
-            .filter((w) => w.length >= 3 && w.length <= 12);
+        const text = await response.text();
+        const onlineWords = text
+          .split("\n")
+          .map((w) => w.trim())
+          .filter((w) => w.length >= 3 && w.length <= 12);
 
-          if (words.length > 1000) {
-            availableWordsRef.current = words;
-            console.log(`Loaded ${words.length} words from online dictionary.`);
-          }
+        if (onlineWords.length > 500) {
+          console.log(
+            "Loaded " + onlineWords.length + " words from online dictionary."
+          );
+          setAllWords((prev) => [...prev, ...onlineWords]);
         }
-      } catch (e) {
-        console.log("Using offline word list fallback.");
+      } catch (error) {
+        console.warn(
+          "Failed to fetch online word list, using fallback dictionary.",
+          error
+        );
       }
     };
-    fetchDictionary();
+    fetchWords();
   }, []);
 
-  // 1. Manage Room Logic
   useEffect(() => {
-    if (!roomId || !currentUser) return;
+    if (!id) return;
 
-    const roomRef = doc(db, "rooms", roomId);
-    const playerRef = doc(db, "rooms", roomId, "players", currentUser.uid);
+    const gameDocRef = doc(db, "games", id as string);
+    const unsubscribe = onSnapshot(gameDocRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data() as GameState;
+        setGameState(data);
 
-    const joinRoom = async () => {
-      await setDoc(roomRef, {}, { merge: true });
-
-      await setDoc(
-        playerRef,
-        {
-          username: currentUser.displayName || "Player",
-          score: 0,
-          id: currentUser.uid,
-        },
-        { merge: true }
-      );
-
-      await addDoc(collection(db, "rooms", roomId, "messages"), {
-        text: `👋 ${currentUser.displayName || "Player"} joined!`,
-        sender: "SYSTEM",
-        createdAt: serverTimestamp(),
-        isSystem: true,
-      });
-    };
-    joinRoom();
-
-    const unsubscribeRoom = onSnapshot(roomRef, (docSnapshot) => {
-      if (docSnapshot.exists()) {
-        const data = docSnapshot.data();
-        setDrawerId(data.drawerId);
-        setCurrentWord(data.word || "");
-        setGameState(data.gameState || "WAITING");
-        setWordOptions(data.wordOptions || []);
-        setGuessedPlayers(data.guessedPlayers || []);
-        setCanvasColor(data.canvasColor || "#FFFFFF");
-
-        if (data.totalRounds) setTotalRounds(data.totalRounds);
-        if (data.currentRound) setCurrentRound(data.currentRound);
-        if (data.turnIndex !== undefined) setTurnIndex(data.turnIndex);
-
-        if (data.roundEndTime) {
-          const endTime =
-            data.roundEndTime instanceof Timestamp
-              ? data.roundEndTime.toMillis()
-              : data.roundEndTime;
-          setRoundEndTime(endTime);
-        }
-      }
-    });
-
-    const playersColRef = collection(db, "rooms", roomId, "players");
-    const unsubscribePlayers = onSnapshot(playersColRef, (snapshot) => {
-      const activePlayers: Player[] = snapshot.docs.map(
-        (doc) =>
-          ({
-            id: doc.id,
-            ...doc.data(),
-          } as Player)
-      );
-      activePlayers.sort((a, b) => a.id.localeCompare(b.id));
-      setPlayers(activePlayers);
-
-      snapshot.docChanges().forEach((change) => {
-        if (change.type === "removed") {
-          const leftPlayer = change.doc.data() as Player;
-          const isHostCheck =
-            activePlayers.length > 0 && activePlayers[0].id === currentUser.uid;
-
-          if (isHostCheck) {
-            addDoc(collection(db, "rooms", roomId, "messages"), {
-              text: `🚪 ${leftPlayer.username} left.`,
-              sender: "SYSTEM",
-              createdAt: serverTimestamp(),
-              isSystem: true,
-            });
-
-            if (leftPlayer.id === drawerIdRef.current) {
-              handleTimeUp(activePlayers);
-            }
-          }
-        }
-      });
-    });
-
-    return () => {
-      deleteDoc(playerRef);
-      unsubscribeRoom();
-      unsubscribePlayers();
-    };
-  }, [roomId, currentUser]);
-
-  // 2. Timer
-  useEffect(() => {
-    if (gameState === "PLAYING" && isDrawer) {
-      const totalGuessers = players.length - 1;
-      if (totalGuessers > 0 && guessedPlayers.length >= totalGuessers) {
-        handleTimeUp();
-        return;
-      }
-    }
-
-    if (!roundEndTime || gameState === "GAME_OVER") return;
-
-    const interval = setInterval(() => {
-      const remaining = Math.ceil((roundEndTime - Date.now()) / 1000);
-      if (remaining <= 0) {
-        setTimeLeft(0);
-        clearInterval(interval);
-        if (isDrawer) {
-          if (gameState === "SELECTING") {
-            const randomWord =
-              wordOptions[Math.floor(Math.random() * wordOptions.length)];
-            handleWordSelect(randomWord);
-          } else {
-            handleTimeUp();
-          }
+        if (data.status === "finished") {
+          Alert.alert("Game Over", "The game has ended!");
+          router.replace("/");
         }
       } else {
-        setTimeLeft(remaining);
+        Alert.alert("Error", "Game not found");
+        router.replace("/");
       }
-    }, 1000);
+    });
 
-    return () => clearInterval(interval);
-  }, [roundEndTime, isDrawer, gameState, guessedPlayers, players]);
+    return () => unsubscribe();
+  }, [id]);
+
+  const getRandomWord = () => {
+    const randomIndex = Math.floor(Math.random() * allWords.length);
+    return allWords[randomIndex];
+  };
+
+  const handleNextRound = async () => {
+    if (!gameState || !id) return;
+
+    const currentPlayerIndex = gameState.players.indexOf(
+      gameState.currentDrawer
+    );
+    const nextPlayerIndex = (currentPlayerIndex + 1) % gameState.players.length;
+    const nextDrawer = gameState.players[nextPlayerIndex];
+
+    const nextWord = getRandomWord();
+
+    await updateDoc(doc(db, "games", id as string), {
+      currentDrawer: nextDrawer,
+      currentWord: nextWord,
+      round: gameState.round + 1,
+      guesses: [],
+    });
+
+    if (canvasRef.current) {
+      canvasRef.current.clear();
+    }
+  };
+
+  const startGame = async () => {
+    if (!gameState || !id) return;
+    const firstWord = getRandomWord();
+    await updateDoc(doc(db, "games", id as string), {
+      status: "playing",
+      currentWord: firstWord,
+      round: 1,
+      guesses: [],
+    });
+  };
 
   useEffect(() => {
-    if (gameState === "GAME_OVER") {
-      Animated.sequence([
-        Animated.spring(scaleAnim2, {
-          toValue: 1,
-          friction: 5,
-          useNativeDriver: true,
-        }),
-        Animated.spring(scaleAnim1, {
-          toValue: 1,
-          friction: 5,
-          useNativeDriver: true,
-        }),
-        Animated.spring(scaleAnim3, {
-          toValue: 1,
-          friction: 5,
-          useNativeDriver: true,
-        }),
-      ]).start();
+    if (gameState?.status === "playing") {
+      const timer = setInterval(() => {
+        setTimeLeft((prev) => {
+          if (prev <= 1) {
+            if (currentUser?.uid === gameState.hostId) {
+              handleNextRound();
+            }
+            return 60;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+      return () => clearInterval(timer);
     }
-  }, [gameState]);
+  }, [gameState?.status, gameState?.round, gameState?.hostId, allWords]);
 
-  // 3. Actions
-  const startGame = async () => {
-    if (players.length < 1) return;
-    const roomRef = doc(db, "rooms", roomId);
-    await updateDoc(roomRef, {
-      currentRound: 1,
-      turnIndex: 0,
-    });
-    startTurn(players[0].id, 0, 1);
-  };
-
-  const startTurn = async (
-    nextDrawerId: string,
-    nextTurnIndex: number,
-    nextRound: number
-  ) => {
-    const options = [];
-    const pool = availableWordsRef.current;
-    for (let i = 0; i < 3; i++)
-      options.push(WORDS_POOL[Math.floor(Math.random() * WORDS_POOL.length)]);
-    options.push(pool[Math.floor(Math.random() * pool.length)]);
-
-    const roomRef = doc(db, "rooms", roomId);
-    await updateDoc(roomRef, {
-      drawerId: nextDrawerId,
-      turnIndex: nextTurnIndex,
-      currentRound: nextRound,
-      gameState: "SELECTING",
-      wordOptions: options,
-      word: "",
-      guessedPlayers: [],
-      canvasColor: "#FFFFFF",
-      roundEndTime: Timestamp.fromMillis(Date.now() + SELECT_TIME * 1000),
-    });
-
-    clearBoard();
-  };
-
-  const handleWordSelect = async (selectedWord: string) => {
-    const roomRef = doc(db, "rooms", roomId);
-    await updateDoc(roomRef, {
-      word: selectedWord,
-      gameState: "PLAYING",
-      roundEndTime: Timestamp.fromMillis(Date.now() + PLAY_TIME * 1000),
+  const handleCorrectGuess = async (userId: string) => {
+    if (!id) return;
+    await updateDoc(doc(db, "games", id as string), {
+      guesses: arrayUnion(userId),
     });
   };
 
-  const handleBackgroundChange = async (color: string) => {
-    const roomRef = doc(db, "rooms", roomId);
-    await updateDoc(roomRef, {
-      canvasColor: color,
-    });
-  };
-
-  const handleTimeUp = (currentPlayersList = players) => {
-    let nextIndex = turnIndex + 1;
-    let nextRound = currentRound;
-
-    if (nextIndex >= currentPlayersList.length) {
-      nextIndex = 0;
-      nextRound++;
-    }
-
-    if (nextRound > totalRounds) {
-      const roomRef = doc(db, "rooms", roomId);
-      updateDoc(roomRef, { gameState: "GAME_OVER" });
-    } else {
-      startTurn(currentPlayersList[nextIndex].id, nextIndex, nextRound);
-    }
-  };
-
-  const clearBoard = async () => {
-    const linesRef = collection(db, "rooms", roomId, "lines");
-    const snapshot = await getDocs(linesRef);
-    const batch = writeBatch(db);
-    snapshot.docs.forEach((doc) => batch.delete(doc.ref));
-    await batch.commit();
-
-    const roomRef = doc(db, "rooms", roomId);
-    await updateDoc(roomRef, { canvasColor: "#FFFFFF" });
-  };
-
-  const handleLeave = async () => {
-    if (players.length <= 1) {
-      try {
-        await deleteDoc(doc(db, "rooms", roomId));
-      } catch (e) {}
-    }
-    router.back();
-  };
-
-  const copyRoomId = () => {
-    Clipboard.setString(roomId);
-    Alert.alert("Copied!", "Room ID copied to clipboard.");
-  };
-
-  const getDisplayWord = () => {
-    if (gameState === "WAITING") return "Waiting for players...";
-    if (gameState === "GAME_OVER") return "Game Over!";
-    if (gameState === "SELECTING")
-      return isDrawer ? "Choose a word!" : "Drawer is choosing...";
-    if (isDrawer) return `Draw: ${currentWord}`;
-
-    const length = currentWord.length;
-    return `Guess: ${currentWord
-      .split("")
-      .map((c) => (c === " " ? " " : "_"))
-      .join(" ")} (${length})`;
-  };
-
-  const renderPodium = () => {
-    const sortedPlayers = [...players].sort((a, b) => b.score - a.score);
-    const winner = sortedPlayers[0];
-    const second = sortedPlayers[1];
-    const third = sortedPlayers[2];
-
+  if (!gameState)
     return (
-      <View style={styles.podiumContainer}>
-        <Text style={styles.podiumTitle}>🏆 Final Results 🏆</Text>
-        <View style={styles.podiumStage}>
-          {second && (
-            <Animated.View
-              style={[
-                styles.podiumPillarContainer,
-                { transform: [{ scale: scaleAnim2 }] },
-              ]}
-            >
-              <View style={styles.podiumAvatar}>
-                <Text style={styles.avatarEmoji}>🥈</Text>
-              </View>
-              <Text style={styles.podiumName}>{second.username}</Text>
-              <View
-                style={[
-                  styles.podiumBar,
-                  { height: 100, backgroundColor: "#C0C0C0" },
-                ]}
-              >
-                <Text style={styles.podiumScore}>{second.score}</Text>
-              </View>
-            </Animated.View>
-          )}
-          {winner && (
-            <Animated.View
-              style={[
-                styles.podiumPillarContainer,
-                { transform: [{ scale: scaleAnim1 }] },
-              ]}
-            >
-              <Text style={styles.fireworks}>🎆</Text>
-              <View style={[styles.podiumAvatar, styles.winnerAvatar]}>
-                <Text style={styles.avatarEmoji}>👑</Text>
-              </View>
-              <Text style={[styles.podiumName, styles.winnerName]}>
-                {winner.username}
-              </Text>
-              <View
-                style={[
-                  styles.podiumBar,
-                  { height: 150, backgroundColor: "#FFD700" },
-                ]}
-              >
-                <Text style={styles.podiumScore}>{winner.score}</Text>
-              </View>
-            </Animated.View>
-          )}
-          {third && (
-            <Animated.View
-              style={[
-                styles.podiumPillarContainer,
-                { transform: [{ scale: scaleAnim3 }] },
-              ]}
-            >
-              <View style={styles.podiumAvatar}>
-                <Text style={styles.avatarEmoji}>🥉</Text>
-              </View>
-              <Text style={styles.podiumName}>{third.username}</Text>
-              <View
-                style={[
-                  styles.podiumBar,
-                  { height: 70, backgroundColor: "#CD7F32" },
-                ]}
-              >
-                <Text style={styles.podiumScore}>{third.score}</Text>
-              </View>
-            </Animated.View>
-          )}
-        </View>
-        <TouchableOpacity style={styles.homeButton} onPress={handleLeave}>
-          <Text style={styles.homeButtonText}>Back to Home</Text>
-        </TouchableOpacity>
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#FF6B6B" />
+        <Text>Loading Game...</Text>
       </View>
     );
-  };
+
+  const isDrawer = gameState.currentDrawer === currentUser?.uid;
 
   return (
-    <SafeAreaView
-      style={styles.container}
-      edges={["top", "bottom", "left", "right"]}
-    >
-      {gameState === "GAME_OVER" ? (
-        renderPodium()
-      ) : (
-        <>
-          <View style={styles.header}>
-            {/* 🏠 NEW: Top Bar with Room ID */}
-            <View style={styles.topBar}>
-              <TouchableOpacity
-                onPress={copyRoomId}
-                style={styles.roomCodeBadge}
-              >
-                <Text style={styles.roomCodeLabel}>ROOM CODE:</Text>
-                <Text style={styles.roomCodeText}>{roomId}</Text>
-                <Text style={styles.copyIcon}>📋</Text>
-              </TouchableOpacity>
+    <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
+      <View style={styles.header}>
+        <TouchableOpacity
+          onPress={() => router.back()}
+          style={styles.backButton}
+        >
+          <Ionicons name="arrow-back" size={24} color="#333" />
+        </TouchableOpacity>
+        <View style={styles.headerInfo}>
+          <Text style={styles.timer}>{timeLeft}s</Text>
+          <Text style={styles.roundInfo}>
+            Round {gameState.round}/{gameState.maxRounds}
+          </Text>
+        </View>
 
-              <View style={styles.roundBadge}>
-                <Text style={styles.roundText}>
-                  Round {currentRound}/{totalRounds}
-                </Text>
-              </View>
-            </View>
-
-            {/* Main Game Info Row */}
-            <View style={styles.gameInfoRow}>
-              <TouchableOpacity
-                onPress={() => setShowSidebar(true)}
-                style={styles.menuButton}
-              >
-                <Text style={styles.menuIcon}>👥</Text>
-              </TouchableOpacity>
-
-              <Text style={styles.wordDisplay}>{getDisplayWord()}</Text>
-
-              {gameState !== "WAITING" ? (
-                <View
-                  style={[
-                    styles.timerBadge,
-                    timeLeft < 10 && styles.timerUrgent,
-                  ]}
-                >
-                  <Text style={styles.timerText}>{timeLeft}s</Text>
-                </View>
-              ) : (
-                <View style={{ width: 40 }} />
-              )}
-            </View>
-
-            <View style={styles.headerButtons}>
-              {isDrawer && gameState === "PLAYING" && (
-                <TouchableOpacity
-                  onPress={clearBoard}
-                  style={styles.clearButton}
-                >
-                  <Text style={styles.buttonText}>Clear</Text>
-                </TouchableOpacity>
-              )}
-              <TouchableOpacity
-                onPress={handleLeave}
-                style={styles.leaveButton}
-              >
-                <Text style={styles.buttonText}>Leave</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {gameState === "WAITING" && isHost && (
-            <View style={styles.controls}>
-              <TouchableOpacity onPress={startGame} style={styles.startButton}>
-                <Text style={styles.startButtonText}>Start Game</Text>
-              </TouchableOpacity>
-            </View>
+        {gameState.status === "waiting" &&
+          currentUser?.uid === gameState.hostId && (
+            <TouchableOpacity onPress={startGame} style={styles.startButton}>
+              <Text style={styles.startButtonText}>Start</Text>
+            </TouchableOpacity>
           )}
+      </View>
 
-          {gameState === "WAITING" && !isHost && (
-            <View style={styles.controls}>
-              <Text style={{ color: "#666", fontStyle: "italic" }}>
-                Waiting for host to start...
-              </Text>
-            </View>
-          )}
+      <View style={styles.wordContainer}>
+        {isDrawer ? (
+          <Text style={styles.wordText}>
+            Draw:{" "}
+            <Text style={styles.highlightWord}>{gameState.currentWord}</Text>
+          </Text>
+        ) : (
+          <Text style={styles.wordText}>
+            Guess the word! ({gameState.currentWord.length} letters)
+          </Text>
+        )}
+      </View>
 
-          <View style={styles.canvasArea}>
-            <DrawingCanvas
-              roomId={roomId}
-              isReadOnly={!isDrawer || gameState !== "PLAYING"}
-              canvasColor={canvasColor}
-              onBackgroundChange={handleBackgroundChange}
-              key={isDrawer ? "drawer" : "guesser"}
-            />
-          </View>
-
-          <View style={styles.chatContainer}>
-            <ChatWindow
-              roomId={roomId}
-              currentWord={currentWord}
-              isDrawer={isDrawer}
-              roundEndTime={roundEndTime}
-            />
-          </View>
-        </>
-      )}
-
-      {/* Sidebar & Word Modals (Same as before) */}
-      <Modal
-        visible={showSidebar}
-        animationType="fade"
-        transparent={true}
-        onRequestClose={() => setShowSidebar(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.sidebar}>
-            <View style={styles.sidebarHeader}>
-              <Text style={styles.sidebarTitle}>
-                Players ({players.length})
-              </Text>
-              <TouchableOpacity onPress={() => setShowSidebar(false)}>
-                <Text style={styles.closeButton}>✕</Text>
-              </TouchableOpacity>
-            </View>
-            <FlatList
-              data={players}
-              keyExtractor={(item) => item.id}
-              renderItem={({ item }) => (
-                <View
-                  style={[
-                    styles.playerRow,
-                    item.id === currentUser?.uid && styles.meRow,
-                  ]}
-                >
-                  <View style={styles.avatar}>
-                    <Text style={styles.avatarText}>
-                      {item.username[0].toUpperCase()}
-                    </Text>
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.playerName}>
-                      {item.username}{" "}
-                      {item.id === currentUser?.uid ? "(You)" : ""}
-                    </Text>
-                    <Text style={styles.playerRole}>
-                      {item.id === drawerId ? "✏️ Drawing" : "👀 Guessing"}
-                    </Text>
-                  </View>
-                  <View style={styles.scoreBadge}>
-                    <Text style={styles.scoreText}>{item.score} pts</Text>
-                  </View>
-                  {guessedPlayers.includes(item.id) && (
-                    <Text style={{ marginLeft: 10, fontSize: 18 }}>✅</Text>
-                  )}
-                </View>
-              )}
-            />
-          </View>
-          <TouchableOpacity
-            style={styles.modalClickAway}
-            onPress={() => setShowSidebar(false)}
+      <View style={styles.gameContainer}>
+        <View style={styles.canvasContainer}>
+          <DrawingCanvas
+            ref={canvasRef}
+            gameId={id as string}
+            isDrawer={isDrawer}
+            selectedColor={selectedColor}
+            strokeWidth={strokeWidth}
           />
         </View>
-      </Modal>
 
-      <Modal
-        visible={isDrawer && gameState === "SELECTING"}
-        animationType="slide"
-        transparent={true}
-      >
-        <View style={styles.wordModalOverlay}>
-          <View style={styles.wordModal}>
-            <Text style={styles.wordModalTitle}>Choose a Word!</Text>
-            <View style={styles.wordOptions}>
-              {wordOptions.map((word, index) => (
-                <TouchableOpacity
-                  key={index}
-                  style={styles.wordOptionBtn}
-                  onPress={() => handleWordSelect(word)}
-                >
-                  <Text style={styles.wordOptionText}>{word}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-            <Text style={{ marginTop: 15, color: "#fff" }}>
-              Auto-pick in {timeLeft}s
-            </Text>
+        {isDrawer && (
+          <View style={styles.toolsContainer}>
+            <DrawingTools
+              selectedColor={selectedColor}
+              onSelectColor={setSelectedColor}
+              strokeWidth={strokeWidth}
+              onSelectStrokeWidth={setStrokeWidth}
+              isEraser={isEraser}
+              toggleEraser={() => {
+                setIsEraser(!isEraser);
+                setSelectedColor(isEraser ? "#000000" : "#FFFFFF");
+              }}
+              onClear={() => {
+                if (canvasRef.current) canvasRef.current.clear();
+              }}
+            />
           </View>
+        )}
+
+        <View style={styles.chatContainer}>
+          <ChatWindow
+            gameId={id as string}
+            currentUser={currentUser}
+            currentWord={gameState.currentWord}
+            isDrawer={isDrawer}
+            onCorrectGuess={handleCorrectGuess}
+          />
         </View>
-      </Modal>
+      </View>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#f5f5f5" },
+  safeArea: {
+    flex: 1,
+    backgroundColor: "#F8F9FA",
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+  },
   header: {
-    padding: 10,
-    backgroundColor: "#fff",
-    borderBottomWidth: 1,
-    borderBottomColor: "#eee",
-  },
-
-  // 🆕 Top Bar Styles
-  topBar: {
     flexDirection: "row",
+    alignItems: "center",
     justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 10,
-  },
-  roomCodeBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#e3f2fd",
-    paddingVertical: 5,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#2196F3",
-  },
-  roomCodeLabel: {
-    fontSize: 10,
-    color: "#2196F3",
-    fontWeight: "bold",
-    marginRight: 5,
-  },
-  roomCodeText: {
-    fontSize: 14,
-    fontWeight: "bold",
-    color: "#333",
-    marginRight: 5,
-  },
-  copyIcon: { fontSize: 12 },
-  roundBadge: {
-    backgroundColor: "#f0f0f0",
+    paddingHorizontal: 16,
     paddingVertical: 10,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#333",
+    borderBottomWidth: 1,
+    borderBottomColor: "#E0E0E0",
+    backgroundColor: "white",
   },
-  roundText: { fontSize: 12, fontWeight: "bold", color: "#333" },
-
-  gameInfoRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 0,
-  },
-  menuButton: {
+  backButton: {
     padding: 5,
-    backgroundColor: "#f0f0f0",
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#333",
   },
-  menuIcon: { fontSize: 20 },
-  wordDisplay: {
+  headerInfo: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 15,
+  },
+  timer: {
     fontSize: 18,
     fontWeight: "bold",
-    color: "#333",
-    flex: 1,
-    textAlign: "center",
+    color: "#FF6B6B",
   },
-
-  headerButtons: {
-    flexDirection: "row",
-    gap: 8,
-    justifyContent: "center",
-    alignItems: "center",
+  roundInfo: {
+    fontSize: 14,
+    color: "#666",
   },
-  title: { fontSize: 10, color: "#666" },
-  controls: { padding: 10, alignItems: "center" },
   startButton: {
-    backgroundColor: "#4a90e2",
-    paddingHorizontal: 30,
-    paddingVertical: 8,
+    backgroundColor: "#4ECDC4",
+    paddingHorizontal: 15,
+    paddingVertical: 6,
     borderRadius: 20,
   },
-  startButtonText: { color: "white", fontWeight: "bold" },
-  clearButton: { backgroundColor: "#ffaa00", padding: 8, borderRadius: 6 },
-  leaveButton: { backgroundColor: "#ff4444", padding: 8, borderRadius: 6 },
-  buttonText: { color: "white", fontWeight: "bold", fontSize: 12 },
-
-  canvasArea: { height: "55%", width: "100%" },
-  chatContainer: { flex: 1 },
-
-  timerBadge: {
-    backgroundColor: "#333",
-    padding: 8,
-    borderRadius: 6,
-    width: 48,
-    alignItems: "center",
-  },
-  timerUrgent: { backgroundColor: "#ff4444" },
-  timerText: { color: "white", fontWeight: "bold", fontSize: 12 },
-
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
-    flexDirection: "row",
-  },
-  sidebar: {
-    width: "80%",
-    backgroundColor: "white",
-    padding: 20,
-    paddingTop: 50,
-  },
-  modalClickAway: { width: "20%" },
-  sidebarHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 20,
-  },
-  sidebarTitle: { fontSize: 24, fontWeight: "bold", color: "#333" },
-  closeButton: { fontSize: 24, color: "#666" },
-  playerRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    padding: 10,
-    marginBottom: 10,
-    backgroundColor: "#f9f9f9",
-    borderRadius: 10,
-  },
-  meRow: { backgroundColor: "#e3f2fd", borderWidth: 1, borderColor: "#4a90e2" },
-  avatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: "#ddd",
-    justifyContent: "center",
-    alignItems: "center",
-    marginRight: 10,
-  },
-  avatarText: { fontWeight: "bold", color: "#555" },
-  playerName: { fontSize: 16, fontWeight: "bold", color: "#333" },
-  playerRole: { fontSize: 12, color: "#666" },
-  scoreBadge: {
-    backgroundColor: "#ffeb3b",
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 10,
-  },
-  scoreText: { fontSize: 12, fontWeight: "bold", color: "#f57f17" },
-  wordModalOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.8)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  wordModal: {
-    width: "80%",
-    backgroundColor: "white",
-    borderRadius: 20,
-    padding: 30,
-    alignItems: "center",
-  },
-  wordModalTitle: { fontSize: 22, fontWeight: "bold", marginBottom: 20 },
-  wordOptions: { width: "100%", gap: 10 },
-  wordOptionBtn: {
-    backgroundColor: "#4a90e2",
-    padding: 15,
-    borderRadius: 10,
-    alignItems: "center",
-  },
-  wordOptionText: { color: "white", fontSize: 18, fontWeight: "bold" },
-
-  // Podium Styles
-  podiumContainer: {
-    flex: 1,
-    backgroundColor: "#4a90e2",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  podiumTitle: {
-    fontSize: 32,
-    fontWeight: "bold",
+  startButtonText: {
     color: "white",
-    marginBottom: 40,
+    fontWeight: "bold",
   },
-  podiumStage: {
-    flexDirection: "row",
-    alignItems: "flex-end",
-    gap: 10,
-    height: 300,
-    paddingBottom: 20,
-  },
-  podiumPillarContainer: { alignItems: "center" },
-  podiumBar: {
-    width: 80,
-    borderTopLeftRadius: 10,
-    borderTopRightRadius: 10,
-    justifyContent: "flex-start",
+  wordContainer: {
     alignItems: "center",
-    paddingTop: 10,
+    paddingVertical: 10,
+    backgroundColor: "#fff",
   },
-  podiumAvatar: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
+  wordText: {
+    fontSize: 18,
+    color: "#333",
+  },
+  highlightWord: {
+    fontWeight: "bold",
+    color: "#4ECDC4",
+    textTransform: "uppercase",
+  },
+  gameContainer: {
+    flex: 1,
+    flexDirection: "column",
+  },
+  canvasContainer: {
+    flex: 2,
     backgroundColor: "white",
-    marginBottom: 10,
-    justifyContent: "center",
-    alignItems: "center",
+    margin: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#ddd",
+    overflow: "hidden",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
   },
-  winnerAvatar: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    borderWidth: 3,
-    borderColor: "#FFD700",
+  toolsContainer: {
+    paddingHorizontal: 10,
+    marginBottom: 5,
   },
-  avatarEmoji: { fontSize: 30 },
-  podiumName: { color: "white", fontWeight: "bold", marginBottom: 5 },
-  winnerName: { fontSize: 20, color: "#FFD700" },
-  podiumScore: { color: "white", fontWeight: "bold", fontSize: 18 },
-  fireworks: { fontSize: 40, position: "absolute", top: -60 },
-  homeButton: {
-    marginTop: 50,
+  chatContainer: {
+    flex: 1,
     backgroundColor: "white",
-    paddingHorizontal: 30,
-    paddingVertical: 15,
-    borderRadius: 25,
+    borderTopWidth: 1,
+    borderTopColor: "#eee",
   },
-  homeButtonText: { color: "#4a90e2", fontWeight: "bold", fontSize: 18 },
 });

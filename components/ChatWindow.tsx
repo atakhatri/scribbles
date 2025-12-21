@@ -34,11 +34,7 @@ interface ChatProps {
   currentUser: User | null;
   currentWord: string;
   isDrawer: boolean;
-<<<<<<< HEAD
-  roundEndTime: number | null; // New prop for scoring
-=======
   onCorrectGuess: (userId: string) => Promise<void>;
->>>>>>> c542d9b36a0754b217908210bf8205353cde4d51
 }
 
 export default function ChatWindow({
@@ -46,11 +42,7 @@ export default function ChatWindow({
   currentUser,
   currentWord,
   isDrawer,
-<<<<<<< HEAD
-  roundEndTime,
-=======
   onCorrectGuess,
->>>>>>> c542d9b36a0754b217908210bf8205353cde4d51
 }: ChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState("");
@@ -83,44 +75,6 @@ export default function ChatWindow({
     const text = inputText.trim();
     const isGuess = text.toLowerCase() === currentWord.toLowerCase();
 
-<<<<<<< HEAD
-    // 🏆 WIN CONDITION CHECK 🏆
-    const isWin =
-      !isDrawer &&
-      currentWord &&
-      textToSend.toUpperCase() === currentWord.toUpperCase();
-
-    if (isWin) {
-      if (user) {
-        // Calculate Time-Based Score
-        let points = 50; // Base points
-        if (roundEndTime) {
-          const timeLeft = Math.max(
-            0,
-            Math.ceil((roundEndTime - Date.now()) / 1000)
-          );
-          // Bonus: 2 points per second left
-          points += timeLeft * 2;
-        }
-
-        // A. Update Player Score
-        const playerRef = doc(db, "rooms", roomId, "players", user.uid);
-        await updateDoc(playerRef, { score: increment(points) });
-
-        // B. Mark as "Guessed"
-        const roomRef = doc(db, "rooms", roomId);
-        await updateDoc(roomRef, {
-          guessedPlayers: arrayUnion(user.uid),
-        });
-      }
-
-      // C. Post System Message
-      await addDoc(msgsRef, {
-        text: `🎉 ${user?.displayName || "Player"} GUESSED THE WORD!`,
-        sender: "SYSTEM",
-        createdAt: serverTimestamp(),
-        isSystem: true,
-=======
     // If it's a correct guess
     if (isGuess && !isDrawer) {
       // Don't show the word in chat, show a system message or specific style
@@ -130,7 +84,6 @@ export default function ChatWindow({
         text: "Correctly guessed the word!",
         isCorrectGuess: true,
         timestamp: serverTimestamp(),
->>>>>>> c542d9b36a0754b217908210bf8205353cde4d51
       });
 
       await onCorrectGuess(currentUser.uid);

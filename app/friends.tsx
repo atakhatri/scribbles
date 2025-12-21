@@ -15,7 +15,6 @@ import {
   ActivityIndicator,
   Alert,
   ImageBackground,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
@@ -23,6 +22,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 import { auth, db } from "../firebaseConfig";
 
 interface UserProfile {
@@ -278,7 +278,7 @@ export default function FriendsScreen() {
       style={styles.backgroundImage}
       resizeMode="cover"
     >
-      <SafeAreaView style={styles.container}>
+      <SafeAreaProvider style={styles.container}>
         <ScrollView style={styles.content}>
           <View style={styles.header}>
             <TouchableOpacity
@@ -408,7 +408,7 @@ export default function FriendsScreen() {
           )}
           <View style={{ height: 40 }} />
         </ScrollView>
-      </SafeAreaView>
+      </SafeAreaProvider>
     </ImageBackground>
   );
 }
