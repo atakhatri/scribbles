@@ -1,175 +1,210 @@
-import { arrayUnion, doc, onSnapshot, updateDoc } from "firebase/firestore";
-import React, {
-  forwardRef,
-  useEffect,
-  useImperativeHandle,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { Canvas, Path, SkPath, Skia } from "@shopify/react-native-skia";
 import {
-  GestureResponderEvent,
-  PanResponder,
-  StyleSheet,
-  View,
-} from "react-native";
-import Svg, { Path } from "react-native-svg";
+  addDoc,
+  collection,
+  onSnapshot,
+  orderBy,
+  query,
+  serverTimestamp,
+} from "firebase/firestore";
+import React, { useEffect, useRef, useState } from "react";
+import { GestureResponderEvent, StyleSheet, View } from "react-native";
 import { db } from "../firebaseConfig";
-
-export interface DrawingCanvasRef {
-  clear: () => void;
-  undo: () => void;
-}
 
 interface DrawingCanvasProps {
   gameId: string;
-  isDrawer: boolean;
-  selectedColor: string;
-  strokeWidth: number;
+  isMyTurn: boolean;
+  strokeColor?: string;
+  strokeWidth?: number;
 }
 
-const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
-  ({ gameId, isDrawer, selectedColor, strokeWidth }, ref) => {
-    const [paths, setPaths] = useState<string[]>([]);
-    const [currentPath, setCurrentPath] = useState<string>("");
-    const currentPathRef = useRef<string>("");
-
-    // Listen for drawing updates from Firestore
-    useEffect(() => {
-      if (!gameId) return;
-      const unsub = onSnapshot(doc(db, "games", gameId), (doc) => {
-        if (doc.exists()) {
-          const data = doc.data();
-          if (data.paths) {
-            setPaths(data.paths);
-          } else {
-            setPaths([]);
-          }
-        }
-      });
-      return () => unsub();
-    }, [gameId]);
-
-    useImperativeHandle(ref, () => ({
-      clear: async () => {
-        setPaths([]);
-        setCurrentPath("");
-        if (isDrawer) {
-          try {
-            await updateDoc(doc(db, "games", gameId), {
-              paths: [],
-            });
-          } catch (e) {
-            console.error("Error clearing canvas:", e);
-          }
-        }
-      },
-      undo: async () => {
-        if (isDrawer && paths.length > 0) {
-          const newPaths = paths.slice(0, -1);
-          try {
-            await updateDoc(doc(db, "games", gameId), {
-              paths: newPaths,
-            });
-          } catch (e) {
-            console.error("Error undoing:", e);
-          }
-        }
-      },
-    }));
-
-    const panResponder = useMemo(
-      () =>
-        PanResponder.create({
-          onStartShouldSetPanResponder: () => isDrawer,
-          onMoveShouldSetPanResponder: () => isDrawer,
-          onPanResponderGrant: (evt: GestureResponderEvent) => {
-            const { locationX, locationY } = evt.nativeEvent;
-            const startPath = `M${locationX},${locationY}`;
-            currentPathRef.current = startPath;
-            setCurrentPath(startPath);
-          },
-          onPanResponderMove: (evt: GestureResponderEvent) => {
-            const { locationX, locationY } = evt.nativeEvent;
-            const newPoint = ` L${locationX},${locationY}`;
-            currentPathRef.current += newPoint;
-            setCurrentPath(currentPathRef.current);
-          },
-          onPanResponderRelease: async () => {
-            if (currentPathRef.current) {
-              const newPathData = {
-                d: currentPathRef.current,
-                stroke: selectedColor,
-                strokeWidth: strokeWidth,
-              };
-
-              try {
-                await updateDoc(doc(db, "games", gameId), {
-                  paths: arrayUnion(JSON.stringify(newPathData)),
-                });
-              } catch (error) {
-                console.error("Error saving path:", error);
-              }
-
-              setCurrentPath("");
-              currentPathRef.current = "";
-            }
-          },
-        }),
-      [isDrawer, selectedColor, strokeWidth, gameId]
-    );
-
-    return (
-      <View style={styles.container} {...panResponder.panHandlers}>
-        <Svg style={StyleSheet.absoluteFill}>
-          {paths.map((pathStr, index) => {
-            let d = pathStr;
-            let stroke = "#000";
-            let width = 3;
-
-            try {
-              const data = JSON.parse(pathStr);
-              d = data.d;
-              stroke = data.stroke;
-              width = data.strokeWidth;
-            } catch (e) {
-              // Fallback for legacy simple strings
-            }
-
-            return (
-              <Path
-                key={index}
-                d={d}
-                stroke={stroke}
-                strokeWidth={width}
-                fill="none"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            );
-          })}
-
-          {currentPath ? (
-            <Path
-              d={currentPath}
-              stroke={selectedColor}
-              strokeWidth={strokeWidth}
-              fill="none"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          ) : null}
-        </Svg>
-      </View>
-    );
+// Helper to reconstruct SkPath from SVG string safely
+const stringToPath = (svgString: string): SkPath | null => {
+  try {
+    return Skia.Path.MakeFromSVGString(svgString);
+  } catch (e) {
+    console.warn("Failed to parse SVG string:", e);
+    return null;
   }
-);
+};
+
+export default function DrawingCanvas({
+  gameId,
+  isMyTurn,
+  strokeColor = "#000000",
+  strokeWidth = 4,
+}: DrawingCanvasProps) {
+  // Local state for paths that have been saved/synced
+  const [completedPaths, setCompletedPaths] = useState<
+    { skPath: SkPath; color: string; strokeWidth: number }[]
+  >([]);
+
+  // We use a Ref for the current path to ensure immediate access inside the touch callback
+  const currentPathRef = useRef<{
+    path: SkPath;
+    color: string;
+    strokeWidth: number;
+  } | null>(null);
+
+  // State to force re-render while drawing so the user sees the line
+  const [, setTick] = useState(0);
+
+  // 1. LISTEN TO SUBCOLLECTION for scalable data syncing
+  useEffect(() => {
+    if (!gameId) return;
+
+    const q = query(
+      collection(db, "games", gameId, "drawings"),
+      orderBy("timestamp", "asc")
+    );
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const paths: { skPath: SkPath; color: string; strokeWidth: number }[] =
+          [];
+
+        snapshot.docs.forEach((doc) => {
+          const data = doc.data();
+
+          // STRICT VALIDATION: Ensure data types are correct before creating Skia objects
+          if (typeof data.path === "string") {
+            const skPath = stringToPath(data.path);
+            if (skPath) {
+              paths.push({
+                skPath,
+                // Fallback to defaults if color/width are missing or invalid
+                color: typeof data.color === "string" ? data.color : "#000000",
+                strokeWidth:
+                  typeof data.strokeWidth === "number" &&
+                  !isNaN(data.strokeWidth)
+                    ? data.strokeWidth
+                    : 4,
+              });
+            }
+          }
+        });
+        setCompletedPaths(paths);
+      },
+      (error) => {
+        console.error("Error fetching drawings:", error);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [gameId]);
+
+  // Universal Touch Handlers using standard React Native events
+  const onTouchStart = (e: GestureResponderEvent) => {
+    if (!isMyTurn) return;
+    const { locationX, locationY } = e.nativeEvent;
+
+    const newPath = Skia.Path.Make();
+    newPath.moveTo(locationX, locationY);
+
+    currentPathRef.current = {
+      path: newPath,
+      color: strokeColor,
+      strokeWidth: strokeWidth,
+    };
+    setTick((t) => t + 1);
+  };
+
+  const onTouchMove = (e: GestureResponderEvent) => {
+    if (!isMyTurn || !currentPathRef.current) return;
+    const { locationX, locationY } = e.nativeEvent;
+
+    currentPathRef.current.path.lineTo(locationX, locationY);
+    setTick((t) => t + 1);
+  };
+
+  const onTouchEnd = async () => {
+    if (!isMyTurn || !currentPathRef.current) return;
+
+    const pathData = currentPathRef.current.path.toSVGString();
+    const pathColor = currentPathRef.current.color;
+    const pathWidth = currentPathRef.current.strokeWidth;
+
+    // Reset ref immediately
+    currentPathRef.current = null;
+    setTick((t) => t + 1);
+
+    if (gameId) {
+      try {
+        await addDoc(collection(db, "games", gameId, "drawings"), {
+          path: pathData,
+          color: pathColor,
+          strokeWidth: pathWidth,
+          timestamp: serverTimestamp(),
+        });
+      } catch (error) {
+        console.error("Error saving stroke:", error);
+      }
+    }
+  };
+
+  return (
+    <View
+      style={styles.container}
+      onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
+      onTouchEnd={onTouchEnd}
+    >
+      {/* We pointerEvents="none" on the Canvas so touches pass through 
+         to the parent View's handlers, avoiding conflict.
+      */}
+      <Canvas style={styles.canvas} pointerEvents="none">
+        {/* Render completed paths from DB */}
+        {completedPaths.map((p, index) => {
+          // Double check path validity during render
+          if (!p.skPath) return null;
+          return (
+            <Path
+              key={index}
+              path={p.skPath}
+              color={p.color}
+              style="stroke"
+              strokeWidth={p.strokeWidth}
+              strokeCap="round"
+              strokeJoin="round"
+            />
+          );
+        })}
+
+        {/* Render the current path being drawn */}
+        {currentPathRef.current && currentPathRef.current.path && (
+          <Path
+            path={currentPathRef.current.path}
+            color={currentPathRef.current.color}
+            style="stroke"
+            strokeWidth={currentPathRef.current.strokeWidth}
+            strokeCap="round"
+            strokeJoin="round"
+          />
+        )}
+      </Canvas>
+    </View>
+  );
+}
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "white",
+    borderRadius: 16,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    margin: 10,
+    elevation: 2,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+  },
+  canvas: {
+    flex: 1,
+    width: "100%",
+    height: "100%",
   },
 });
-
-export default DrawingCanvas;
