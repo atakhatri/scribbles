@@ -1,183 +1,166 @@
-import { Canvas, Path, SkPath, Skia } from "@shopify/react-native-skia";
 import {
-  addDoc,
-  collection,
-  onSnapshot,
-  orderBy,
-  query,
-  serverTimestamp,
-} from "firebase/firestore";
-import React, { useEffect, useRef, useState } from "react";
-import { GestureResponderEvent, StyleSheet, View } from "react-native";
-import { db } from "../firebaseConfig";
+  Canvas,
+  Path,
+  Picture,
+  SkPath,
+  SkPicture,
+  Skia,
+} from "@shopify/react-native-skia";
+import React, { useMemo, useRef } from "react";
+import {
+  PanResponder,
+  StyleSheet,
+  View,
+  useWindowDimensions,
+} from "react-native";
 
-interface DrawingCanvasProps {
-  gameId: string;
-  isMyTurn: boolean;
-  strokeColor?: string;
-  strokeWidth?: number;
+// Define the shape of a path
+export interface DrawingPath {
+  path: SkPath;
+  color: string;
+  strokeWidth: number;
 }
 
-// Helper to reconstruct SkPath from SVG string safely
-const stringToPath = (svgString: string): SkPath | null => {
-  try {
-    return Skia.Path.MakeFromSVGString(svgString);
-  } catch (e) {
-    console.warn("Failed to parse SVG string:", e);
-    return null;
-  }
-};
+interface DrawingCanvasProps {
+  paths: DrawingPath[];
+  currentPath?: DrawingPath | null;
+  onStrokeStart?: (x: number, y: number) => void;
+  onStrokeActive?: (x: number, y: number) => void;
+  onStrokeEnd?: () => void;
+  // The snapshot data can be a Uint8Array (buffer) or a Base64 string from Firebase
+  initialSnapshot?: Uint8Array | string | null;
+  isReadOnly?: boolean;
+  style?: any;
+}
 
-export default function DrawingCanvas({
-  gameId,
-  isMyTurn,
-  strokeColor = "#000000",
-  strokeWidth = 4,
-}: DrawingCanvasProps) {
-  // Local state for paths that have been saved/synced
-  const [completedPaths, setCompletedPaths] = useState<
-    { skPath: SkPath; color: string; strokeWidth: number }[]
-  >([]);
+const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
+  paths = [], // Default to empty array to prevent map of undefined error
+  currentPath,
+  onStrokeStart,
+  onStrokeActive,
+  onStrokeEnd,
+  initialSnapshot,
+  isReadOnly = false,
+  style,
+}) => {
+  const { width, height } = useWindowDimensions();
 
-  // We use a Ref for the current path to ensure immediate access inside the touch callback
-  const currentPathRef = useRef<{
-    path: SkPath;
-    color: string;
-    strokeWidth: number;
-  } | null>(null);
+  // Helper to convert Base64 to Uint8Array safely
+  const safeMakePicture = (data: any): SkPicture | null => {
+    if (!data) return null;
 
-  // State to force re-render while drawing so the user sees the line
-  const [, setTick] = useState(0);
+    try {
+      let buffer: Uint8Array | null = null;
 
-  // 1. LISTEN TO SUBCOLLECTION for scalable data syncing
-  useEffect(() => {
-    if (!gameId) return;
-
-    const q = query(
-      collection(db, "games", gameId, "drawings"),
-      orderBy("timestamp", "asc")
-    );
-
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        const paths: { skPath: SkPath; color: string; strokeWidth: number }[] =
-          [];
-
-        snapshot.docs.forEach((doc) => {
-          const data = doc.data();
-
-          // STRICT VALIDATION: Ensure data types are correct before creating Skia objects
-          if (typeof data.path === "string") {
-            const skPath = stringToPath(data.path);
-            if (skPath) {
-              paths.push({
-                skPath,
-                // Fallback to defaults if color/width are missing or invalid
-                color: typeof data.color === "string" ? data.color : "#000000",
-                strokeWidth:
-                  typeof data.strokeWidth === "number" &&
-                  !isNaN(data.strokeWidth)
-                    ? data.strokeWidth
-                    : 4,
-              });
-            }
+      if (typeof data === "string") {
+        try {
+          // Handle Base64 string from Firebase
+          // This simple conversion works for standard base64
+          const binaryString = atob(data);
+          const len = binaryString.length;
+          buffer = new Uint8Array(len);
+          for (let i = 0; i < len; i++) {
+            buffer[i] = binaryString.charCodeAt(i);
           }
-        });
-        setCompletedPaths(paths);
-      },
-      (error) => {
-        console.error("Error fetching drawings:", error);
+        } catch (base64Error) {
+          console.warn(
+            "DrawingCanvas: Failed to decode base64 string",
+            base64Error
+          );
+          return null;
+        }
+      } else if (data instanceof Uint8Array) {
+        buffer = data;
+      } else if (data instanceof ArrayBuffer) {
+        buffer = new Uint8Array(data);
+      } else if (Array.isArray(data)) {
+        // Handle standard JS arrays (e.g. from JSON serialization)
+        buffer = new Uint8Array(data);
+      } else {
+        // If it's some other object (like an ordinary array-like object), try to cast
+        try {
+          // @ts-ignore
+          buffer = new Uint8Array(data);
+        } catch (castError) {
+          console.warn(
+            "DrawingCanvas: Data is not convertible to Uint8Array",
+            castError
+          );
+          return null;
+        }
       }
-    );
 
-    return () => unsubscribe();
-  }, [gameId]);
-
-  // Universal Touch Handlers using standard React Native events
-  const onTouchStart = (e: GestureResponderEvent) => {
-    if (!isMyTurn) return;
-    const { locationX, locationY } = e.nativeEvent;
-
-    const newPath = Skia.Path.Make();
-    newPath.moveTo(locationX, locationY);
-
-    currentPathRef.current = {
-      path: newPath,
-      color: strokeColor,
-      strokeWidth: strokeWidth,
-    };
-    setTick((t) => t + 1);
-  };
-
-  const onTouchMove = (e: GestureResponderEvent) => {
-    if (!isMyTurn || !currentPathRef.current) return;
-    const { locationX, locationY } = e.nativeEvent;
-
-    currentPathRef.current.path.lineTo(locationX, locationY);
-    setTick((t) => t + 1);
-  };
-
-  const onTouchEnd = async () => {
-    if (!isMyTurn || !currentPathRef.current) return;
-
-    const pathData = currentPathRef.current.path.toSVGString();
-    const pathColor = currentPathRef.current.color;
-    const pathWidth = currentPathRef.current.strokeWidth;
-
-    // Reset ref immediately
-    currentPathRef.current = null;
-    setTick((t) => t + 1);
-
-    if (gameId) {
-      try {
-        await addDoc(collection(db, "games", gameId, "drawings"), {
-          path: pathData,
-          color: pathColor,
-          strokeWidth: pathWidth,
-          timestamp: serverTimestamp(),
-        });
-      } catch (error) {
-        console.error("Error saving stroke:", error);
+      // Check if buffer is valid before calling Skia
+      if (buffer && buffer.length > 0) {
+        return Skia.Picture.MakePicture(buffer);
       }
+    } catch (e) {
+      console.warn("DrawingCanvas: Failed to create picture from snapshot:", e);
     }
+    return null;
   };
+
+  // Memoize the picture so we don't try to recreate it on every render
+  const backgroundPicture = useMemo(() => {
+    return safeMakePicture(initialSnapshot);
+  }, [initialSnapshot]);
+
+  // Use PanResponder instead of Skia's useTouchHandler to avoid version/type issues
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => !isReadOnly,
+      onMoveShouldSetPanResponder: () => !isReadOnly,
+      onPanResponderGrant: (evt) => {
+        if (isReadOnly) return;
+        const { locationX, locationY } = evt.nativeEvent;
+        if (onStrokeStart) onStrokeStart(locationX, locationY);
+      },
+      onPanResponderMove: (evt) => {
+        if (isReadOnly) return;
+        const { locationX, locationY } = evt.nativeEvent;
+        if (onStrokeActive) onStrokeActive(locationX, locationY);
+      },
+      onPanResponderRelease: () => {
+        if (isReadOnly) return;
+        if (onStrokeEnd) onStrokeEnd();
+      },
+      onPanResponderTerminate: () => {
+        if (isReadOnly) return;
+        if (onStrokeEnd) onStrokeEnd();
+      },
+    })
+  ).current;
 
   return (
-    <View
-      style={styles.container}
-      onTouchStart={onTouchStart}
-      onTouchMove={onTouchMove}
-      onTouchEnd={onTouchEnd}
-    >
-      {/* We pointerEvents="none" on the Canvas so touches pass through 
-         to the parent View's handlers, avoiding conflict.
+    // Attach the PanResponder to the container View
+    <View style={[styles.container, style]} {...panResponder.panHandlers}>
+      {/* Pass pointerEvents="none" to the Canvas so the parent View receives 
+         the touch events first. This ensures PanResponder works smoothly.
       */}
-      <Canvas style={styles.canvas} pointerEvents="none">
-        {/* Render completed paths from DB */}
-        {completedPaths.map((p, index) => {
-          // Double check path validity during render
-          if (!p.skPath) return null;
-          return (
-            <Path
-              key={index}
-              path={p.skPath}
-              color={p.color}
-              style="stroke"
-              strokeWidth={p.strokeWidth}
-              strokeCap="round"
-              strokeJoin="round"
-            />
-          );
-        })}
+      <Canvas style={{ flex: 1 }} pointerEvents="none">
+        {/* Render the saved background picture if it exists */}
+        {backgroundPicture && <Picture picture={backgroundPicture} />}
+
+        {/* Render completed paths */}
+        {paths.map((p, index) => (
+          <Path
+            key={index}
+            path={p.path}
+            color={p.color}
+            style="stroke"
+            strokeWidth={p.strokeWidth}
+            strokeCap="round"
+            strokeJoin="round"
+          />
+        ))}
 
         {/* Render the current path being drawn */}
-        {currentPathRef.current && currentPathRef.current.path && (
+        {currentPath && (
           <Path
-            path={currentPathRef.current.path}
-            color={currentPathRef.current.color}
+            path={currentPath.path}
+            color={currentPath.color}
             style="stroke"
-            strokeWidth={currentPathRef.current.strokeWidth}
+            strokeWidth={currentPath.strokeWidth}
             strokeCap="round"
             strokeJoin="round"
           />
@@ -185,26 +168,13 @@ export default function DrawingCanvas({
       </Canvas>
     </View>
   );
-}
+};
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "white",
-    borderRadius: 16,
-    overflow: "hidden",
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-    margin: 10,
-    elevation: 2,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-  },
-  canvas: {
-    flex: 1,
-    width: "100%",
-    height: "100%",
+    backgroundColor: "#fff",
   },
 });
+
+export default DrawingCanvas;

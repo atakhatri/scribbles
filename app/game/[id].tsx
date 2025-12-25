@@ -6,6 +6,7 @@ import {
   arrayRemove,
   arrayUnion,
   collection,
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
@@ -33,7 +34,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import ChatWindow from "../../components/ChatWindow";
-import DrawingCanvas from "../../components/DrawingCanvas"; // Removed named import that might fail
+import DrawingCanvas, { DrawingPath } from "../../components/DrawingCanvas";
 import DrawingTools from "../../components/DrawingTools";
 import { WORDS_POOL } from "../../components/words";
 import { auth, db } from "../../firebaseConfig";
@@ -50,6 +51,7 @@ const { width } = Dimensions.get("window");
 interface CanvasRef {
   clear: () => void;
   undo: () => void;
+  getPaths: () => DrawingPath[];
 }
 
 // --- FALLBACK WORD DICTIONARY ---
@@ -81,6 +83,7 @@ export default function GameScreen() {
   const [isEraser, setIsEraser] = useState(false);
   const [allWords, setAllWords] = useState<string[]>(FALLBACK_WORD_LIST);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [drawingPaths, setDrawingPaths] = useState<DrawingPath[]>([]);
   const [playerNames, setPlayerNames] = useState<Record<string, string>>({});
   const slideAnim = useRef(new Animated.Value(-width * 0.8)).current;
   const [customWord, setCustomWord] = useState("");
@@ -251,6 +254,24 @@ export default function GameScreen() {
     fetchNames();
   }, [gameState?.players]);
 
+  // 1. LISTEN TO SUBCOLLECTION for scalable data syncing
+  useEffect(() => {
+    if (!id) return;
+
+    const q = query(collection(db, "games", id as string, "drawings"));
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const paths: DrawingPath[] = [];
+      snapshot.docs.forEach((doc) => {
+        const data = doc.data();
+        // Assuming data.path is already an SkPath or can be converted
+        paths.push(data as DrawingPath);
+      });
+      setDrawingPaths(paths);
+    });
+    return () => unsubscribe();
+  }, [id]);
+
   const getWordChoices = () => {
     const choices = new Set<string>();
     let attempts = 0;
@@ -283,20 +304,18 @@ export default function GameScreen() {
     const nextPlayerIndex = (currentPlayerIndex + 1) % gameState.players.length;
     const nextDrawer = gameState.players[nextPlayerIndex];
 
-    const choices = getWordChoices();
+    const choices = getWordChoices(); // Generate new word choices for the next round
 
     await updateDoc(doc(db, "games", id as string), {
       currentDrawer: nextDrawer,
       currentWord: "", // Empty indicates choosing phase
       wordChoices: choices,
       round: gameState.round + 1,
+      // Clear the canvas for the next round (handled by DrawingCanvas)
+      // clear the canvas for the next round
       guesses: [],
       hints: [],
     });
-
-    if (canvasRef.current) {
-      canvasRef.current.clear();
-    }
   };
 
   const handleSelectWord = async (word: string) => {
@@ -752,6 +771,10 @@ export default function GameScreen() {
                 ref={canvasRef}
                 gameId={id as string}
                 isDrawer={isDrawer}
+                currentUser={currentUser}
+                playerNames={playerNames} // Pass playerNames to DrawingCanvas
+                paths={drawingPaths}
+                onStrokeEnd={handleNextRound}
                 selectedColor={selectedColor}
                 strokeWidth={strokeWidth}
               />
@@ -775,8 +798,20 @@ export default function GameScreen() {
                       setSelectedColor("#FFFFFF");
                     }
                   }}
-                  onClear={() => {
-                    if (canvasRef.current) canvasRef.current.clear();
+                  onClear={async () => {
+                    if (id) {
+                      const drawingsRef = collection(
+                        db,
+                        "games",
+                        id as string,
+                        "drawings"
+                      );
+                      const snapshot = await getDocs(drawingsRef);
+                      // Delete each document in the subcollection
+                      snapshot.docs.forEach(async (drawingDoc) => {
+                        await deleteDoc(doc(drawingsRef, drawingDoc.id));
+                      });
+                    }
                   }}
                   onUndo={() => {
                     if (canvasRef.current) canvasRef.current.undo();
