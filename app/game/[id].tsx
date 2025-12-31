@@ -1,4 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
+import { Skia } from "@shopify/react-native-skia";
 import * as Clipboard from "expo-clipboard";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
@@ -6,7 +7,6 @@ import {
   arrayRemove,
   arrayUnion,
   collection,
-  deleteDoc,
   doc,
   getDoc,
   getDocs,
@@ -39,20 +39,7 @@ import DrawingTools from "../../components/DrawingTools";
 import { WORDS_POOL } from "../../components/words";
 import { auth, db } from "../../firebaseConfig";
 
-// Extend DrawingCanvas to accept ref
-const DrawingCanvasWithRef = React.forwardRef((props: any, ref: any) => (
-  <DrawingCanvas {...props} forwardedRef={ref} />
-));
-DrawingCanvasWithRef.displayName = "DrawingCanvasWithRef";
-
 const { width } = Dimensions.get("window");
-
-// Local definition to fix type errors if the component doesn't export it
-interface CanvasRef {
-  clear: () => void;
-  undo: () => void;
-  getPaths: () => DrawingPath[];
-}
 
 // --- FALLBACK WORD DICTIONARY ---
 const FALLBACK_WORD_LIST = WORDS_POOL;
@@ -69,6 +56,8 @@ type GameState = {
   hostId: string;
   guesses: string[];
   hints?: number[];
+  paths?: any[]; // Added for drawing sync
+  turnStartTime?: any; // Added for robust timer
 };
 
 export default function GameScreen() {
@@ -77,13 +66,17 @@ export default function GameScreen() {
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [currentUser, setCurrentUser] = useState(auth.currentUser);
   const [timeLeft, setTimeLeft] = useState(60);
+
+  // Drawing State
+  const [paths, setPaths] = useState<DrawingPath[]>([]);
+  const [currentPath, setCurrentPath] = useState<DrawingPath | null>(null);
   const [selectedColor, setSelectedColor] = useState("#000000");
   const [previousColor, setPreviousColor] = useState("#000000");
   const [strokeWidth, setStrokeWidth] = useState(3);
   const [isEraser, setIsEraser] = useState(false);
+
   const [allWords, setAllWords] = useState<string[]>(FALLBACK_WORD_LIST);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const [drawingPaths, setDrawingPaths] = useState<DrawingPath[]>([]);
   const [playerNames, setPlayerNames] = useState<Record<string, string>>({});
   const slideAnim = useRef(new Animated.Value(-width * 0.8)).current;
   const [customWord, setCustomWord] = useState("");
@@ -179,7 +172,7 @@ export default function GameScreen() {
           setAllWords((prev) => [...prev, ...onlineWords]);
         }
       } catch (error) {
-        console.warn(
+        console.log(
           "Failed to fetch online word list, using fallback dictionary.",
           error
         );
@@ -197,11 +190,19 @@ export default function GameScreen() {
         const data = docSnap.data() as GameState;
         setGameState(data);
 
-        // Removed auto-redirect on finish to show results screen
-        // if (data.status === "finished") {
-        //   Alert.alert("Game Over", "The game has ended!");
-        //   router.replace("/");
-        // }
+        // SYNC PATHS: If paths exist in DB, parse them for the canvas
+        if (data.paths) {
+          // We optimize to not overwrite 'currentPath' (active drawing) logic
+          // but we need to ensure the main 'paths' array matches the server.
+          const loadedPaths = data.paths.map((p: any) => ({
+            ...p,
+            path: Skia.Path.MakeFromSVGString(p.pathString) || Skia.Path.Make(),
+          }));
+          setPaths(loadedPaths);
+        } else {
+          // New round or cleared
+          setPaths([]);
+        }
       } else {
         Alert.alert("Error", "Game not found");
         router.replace("/");
@@ -254,24 +255,6 @@ export default function GameScreen() {
     fetchNames();
   }, [gameState?.players]);
 
-  // 1. LISTEN TO SUBCOLLECTION for scalable data syncing
-  useEffect(() => {
-    if (!id) return;
-
-    const q = query(collection(db, "games", id as string, "drawings"));
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const paths: DrawingPath[] = [];
-      snapshot.docs.forEach((doc) => {
-        const data = doc.data();
-        // Assuming data.path is already an SkPath or can be converted
-        paths.push(data as DrawingPath);
-      });
-      setDrawingPaths(paths);
-    });
-    return () => unsubscribe();
-  }, [id]);
-
   const getWordChoices = () => {
     const choices = new Set<string>();
     let attempts = 0;
@@ -304,18 +287,20 @@ export default function GameScreen() {
     const nextPlayerIndex = (currentPlayerIndex + 1) % gameState.players.length;
     const nextDrawer = gameState.players[nextPlayerIndex];
 
-    const choices = getWordChoices(); // Generate new word choices for the next round
+    const choices = getWordChoices();
 
     await updateDoc(doc(db, "games", id as string), {
       currentDrawer: nextDrawer,
       currentWord: "", // Empty indicates choosing phase
       wordChoices: choices,
       round: gameState.round + 1,
-      // Clear the canvas for the next round (handled by DrawingCanvas)
-      // clear the canvas for the next round
       guesses: [],
       hints: [],
+      paths: [], // Clear canvas
+      turnStartTime: serverTimestamp(), // Sync timer
     });
+
+    setPaths([]); // Clear local paths immediately
   };
 
   const handleSelectWord = async (word: string) => {
@@ -323,6 +308,7 @@ export default function GameScreen() {
     await updateDoc(doc(db, "games", id as string), {
       currentWord: word,
       wordChoices: [],
+      turnStartTime: serverTimestamp(), // Start the guessing timer
     });
   };
 
@@ -336,23 +322,30 @@ export default function GameScreen() {
       round: 1,
       guesses: [],
       hints: [],
+      paths: [],
+      turnStartTime: serverTimestamp(),
     });
   };
 
+  // --- TIMER LOGIC (ROBUST) ---
   useEffect(() => {
     if (gameState?.status === "playing") {
       processingRoundEnd.current = false;
+      const isHost = currentUser?.uid === gameState.hostId;
 
       if (!gameState.currentWord) {
         // --- CHOOSING PHASE (20s) ---
+        // Simple local timer for choosing is usually fine, but serverTime is better
+        // We'll stick to local for choosing to keep it snappy, but guard against stuck states
         setTimeLeft(20);
         const timer = setInterval(() => {
           setTimeLeft((prev) => {
             if (prev <= 1) {
-              const currentGS = gameStateRef.current;
-              if (currentUser?.uid === currentGS?.hostId) {
-                // Auto-select random word if time runs out
-                const choices = currentGS?.wordChoices || [];
+              // Time's up for choosing
+              clearInterval(timer);
+              if (isHost) {
+                // Auto-select random word
+                const choices = gameState.wordChoices || [];
                 const randomWord = choices[0] || "apple";
                 handleSelectWord(randomWord);
               }
@@ -364,31 +357,37 @@ export default function GameScreen() {
         return () => clearInterval(timer);
       } else {
         // --- GUESSING PHASE (120s) ---
-        setTimeLeft(120);
+        // Use server turnStartTime if available for accuracy
+        const calculateTime = () => {
+          if (gameState.turnStartTime?.seconds) {
+            const now = Date.now() / 1000;
+            const start = gameState.turnStartTime.seconds;
+            const elapsed = now - start;
+            const remaining = Math.max(0, Math.floor(120 - elapsed));
+            return remaining;
+          }
+          return 120; // Fallback
+        };
+
+        setTimeLeft(calculateTime()); // Initial set
+
         const timer = setInterval(() => {
-          setTimeLeft((prev) => {
-            const currentGS = gameStateRef.current;
+          const remaining = calculateTime();
+          setTimeLeft(remaining);
 
-            // Host Logic: Reveal Hints
-            if (
-              currentUser?.uid === currentGS?.hostId &&
-              currentGS?.currentWord
-            ) {
+          if (remaining <= 0) {
+            clearInterval(timer);
+            if (isHost) {
+              handleNextRound();
             }
-
-            if (prev <= 1) {
-              if (currentUser?.uid === currentGS?.hostId) {
-                handleNextRound();
-              }
-              return 0;
-            }
-            return prev - 1;
-          });
+          }
         }, 1000);
         return () => clearInterval(timer);
       }
     }
-  }, [gameState?.status, gameState?.currentWord]); // Switch phases based on currentWord
+  }, [gameState?.status, gameState?.currentWord, gameState?.turnStartTime]);
+  // Dependency on turnStartTime ensures we don't reset unless the SERVER says the turn reset.
+  // Drawing strokes does NOT change turnStartTime, so this fixes the bug.
 
   // Check for early round end (all guessed)
   useEffect(() => {
@@ -433,7 +432,82 @@ export default function GameScreen() {
       currentWord: "",
       guesses: [],
       scores: resetScores,
+      paths: [],
     });
+  };
+
+  // --- DRAWING HANDLERS ---
+  const isDrawer = gameState?.currentDrawer === currentUser?.uid;
+
+  const handleStrokeStart = (x: number, y: number) => {
+    if (!isDrawer) return;
+    const newPath = Skia.Path.Make();
+    newPath.moveTo(x, y);
+    setCurrentPath({
+      path: newPath,
+      color: selectedColor,
+      strokeWidth: strokeWidth,
+    });
+  };
+
+  const handleStrokeActive = (x: number, y: number) => {
+    if (!isDrawer || !currentPath) return;
+    currentPath.path.lineTo(x, y);
+    // Force re-render for local smoothness
+    setCurrentPath({ ...currentPath });
+  };
+
+  const handleStrokeEnd = async () => {
+    if (!isDrawer || !currentPath || !id) return;
+
+    // Optimistic update
+    const newPaths = [...paths, currentPath];
+    setPaths(newPaths);
+    setCurrentPath(null);
+
+    // Sync to Firestore
+    const pathData = {
+      pathString: currentPath.path.toSVGString(),
+      color: currentPath.color,
+      strokeWidth: currentPath.strokeWidth,
+    };
+
+    try {
+      await updateDoc(doc(db, "games", id as string), {
+        paths: arrayUnion(pathData),
+      });
+    } catch (err) {
+      console.error("Failed to save stroke", err);
+    }
+  };
+
+  const handleClear = async () => {
+    setPaths([]);
+    if (id) {
+      await updateDoc(doc(db, "games", id as string), {
+        paths: [],
+      });
+    }
+  };
+
+  const handleUndo = async () => {
+    // Local undo
+    if (paths.length === 0) return;
+    const newPaths = paths.slice(0, -1);
+    setPaths(newPaths);
+
+    // Firestore Undo (requires rewriting the whole array)
+    // This is expensive but necessary for undo
+    if (id) {
+      const serializedPaths = newPaths.map((p) => ({
+        pathString: p.path.toSVGString(),
+        color: p.color,
+        strokeWidth: p.strokeWidth,
+      }));
+      await updateDoc(doc(db, "games", id as string), {
+        paths: serializedPaths,
+      });
+    }
   };
 
   const toggleMenu = () => {
@@ -602,7 +676,6 @@ export default function GameScreen() {
     );
   }
 
-  const isDrawer = gameState.currentDrawer === currentUser?.uid;
   const currentCycle = Math.ceil(gameState.round / gameState.players.length);
 
   return (
@@ -767,16 +840,16 @@ export default function GameScreen() {
         ) : (
           <>
             <View style={styles.canvasContainer}>
-              <DrawingCanvasWithRef
+              <DrawingCanvas
                 ref={canvasRef}
+                paths={paths}
+                currentPath={currentPath}
+                onStrokeStart={handleStrokeStart}
+                onStrokeActive={handleStrokeActive}
+                onStrokeEnd={handleStrokeEnd}
+                isReadOnly={!isDrawer}
                 gameId={id as string}
-                isDrawer={isDrawer}
-                currentUser={currentUser}
-                playerNames={playerNames} // Pass playerNames to DrawingCanvas
-                paths={drawingPaths}
-                onStrokeEnd={handleNextRound}
-                selectedColor={selectedColor}
-                strokeWidth={strokeWidth}
+                initialSnapshot={null}
               />
             </View>
 
@@ -798,24 +871,8 @@ export default function GameScreen() {
                       setSelectedColor("#FFFFFF");
                     }
                   }}
-                  onClear={async () => {
-                    if (id) {
-                      const drawingsRef = collection(
-                        db,
-                        "games",
-                        id as string,
-                        "drawings"
-                      );
-                      const snapshot = await getDocs(drawingsRef);
-                      // Delete each document in the subcollection
-                      snapshot.docs.forEach(async (drawingDoc) => {
-                        await deleteDoc(doc(drawingsRef, drawingDoc.id));
-                      });
-                    }
-                  }}
-                  onUndo={() => {
-                    if (canvasRef.current) canvasRef.current.undo();
-                  }}
+                  onClear={handleClear}
+                  onUndo={handleUndo}
                 />
               </View>
             )}
