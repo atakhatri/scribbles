@@ -1,4 +1,3 @@
-import { User } from "firebase/auth";
 import {
   addDoc,
   collection,
@@ -31,12 +30,18 @@ interface ChatMessage {
   isCorrectGuess: boolean;
   isCloseGuess?: boolean;
   isSystem?: boolean;
+  systemType?: string; // 'join' | 'leave' etc.
   timestamp: any;
+}
+
+export interface ChatUser {
+  uid: string;
+  displayName: string | null;
 }
 
 interface ChatProps {
   gameId: string;
-  currentUser: User | null;
+  currentUser: ChatUser | null;
   currentWord: string;
   isDrawer: boolean;
   guesses: string[];
@@ -154,12 +159,18 @@ export default function ChatWindow({
     const isCorrect = item.isCorrectGuess;
     const isClose = item.isCloseGuess;
     const isSystem = item.isSystem;
+    const systemType = (item as any).systemType;
+    const text = (item.text || "").toString();
+
+    // In case messages were written without the boolean flags, infer from text
+    const inferredIsCorrect = isCorrect || /correctly guessed/i.test(text);
+    const inferredIsClose = isClose || /is close/i.test(text);
 
     let rowStyle: StyleProp<ViewStyle> = styles.messageRow;
     let textStyle: StyleProp<TextStyle> = styles.messageText;
     let nameStyle: StyleProp<TextStyle> = styles.userName;
 
-    if (isCorrect) {
+    if (inferredIsCorrect) {
       rowStyle = [styles.messageRow, styles.correctRow];
       textStyle = [styles.messageText, styles.correctText];
       nameStyle = [styles.userName, styles.correctText];
@@ -168,9 +179,19 @@ export default function ChatWindow({
       textStyle = [styles.messageText, styles.closeText];
       nameStyle = [styles.userName, styles.closeText];
     } else if (isSystem) {
-      rowStyle = [styles.messageRow, styles.systemRow];
-      textStyle = [styles.messageText, styles.systemText];
-      nameStyle = [styles.userName, styles.systemText];
+      if (systemType === "join") {
+        rowStyle = [styles.messageRow, styles.joinRow];
+        textStyle = [styles.messageText, styles.joinText];
+        nameStyle = [styles.userName, styles.joinText];
+      } else if (systemType === "leave") {
+        rowStyle = [styles.messageRow, styles.leaveRow];
+        textStyle = [styles.messageText, styles.leaveText];
+        nameStyle = [styles.userName, styles.leaveText];
+      } else {
+        rowStyle = [styles.messageRow, styles.systemRow];
+        textStyle = [styles.messageText, styles.systemText];
+        nameStyle = [styles.userName, styles.systemText];
+      }
     }
 
     return (
@@ -266,6 +287,24 @@ const styles = StyleSheet.create({
     color: "#4b5563",
     fontStyle: "italic",
     fontSize: 12,
+  },
+  joinRow: {
+    backgroundColor: "#DBEAFE", // Light blue
+    padding: 4,
+    borderRadius: 4,
+  },
+  joinText: {
+    color: "#1E40AF",
+    fontWeight: "700",
+  },
+  leaveRow: {
+    backgroundColor: "#FEE2E2", // Light red
+    padding: 4,
+    borderRadius: 4,
+  },
+  leaveText: {
+    color: "#991B1B",
+    fontWeight: "700",
   },
   inputContainer: {
     flexDirection: "row",

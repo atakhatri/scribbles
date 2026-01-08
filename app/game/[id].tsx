@@ -1,5 +1,4 @@
 import { Ionicons } from "@expo/vector-icons";
-import { Skia } from "@shopify/react-native-skia";
 import * as Clipboard from "expo-clipboard";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
@@ -9,1425 +8,1108 @@ import {
   collection,
   doc,
   getDoc,
-  getDocs,
-  increment,
   onSnapshot,
-  query,
+  runTransaction,
   serverTimestamp,
   updateDoc,
-  where,
 } from "firebase/firestore";
 import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   Animated,
-  Dimensions,
-  ImageBackground,
-  Modal,
-  ScrollView,
+  Easing,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 import ChatWindow from "../../components/ChatWindow";
-import DrawingCanvas, { DrawingPath } from "../../components/DrawingCanvas";
+import DrawingCanvas from "../../components/DrawingCanvas";
 import DrawingTools from "../../components/DrawingTools";
+import InviteFriendsModal from "../../components/InviteFriendsModal";
+import Podium from "../../components/Podium";
+import WaitingLobby from "../../components/WaitingLobby";
 import { WORDS_POOL } from "../../components/words";
 import { auth, db } from "../../firebaseConfig";
 
-const { width } = Dimensions.get("window");
+interface Stroke {
+  path: string;
+  color: string;
+  width: number;
+}
 
-// --- FALLBACK WORD DICTIONARY ---
-const FALLBACK_WORD_LIST = WORDS_POOL;
-
-type GameState = {
-  status: "waiting" | "playing" | "finished";
+interface GameData {
+  players: any[];
   currentDrawer: string;
-  currentWord: string;
-  wordChoices?: string[];
-  round: number;
-  maxRounds: number;
-  scores: Record<string, number>;
-  players: string[];
+  word: string;
+  strokes: Stroke[];
+  status: "waiting" | "playing" | "finished";
   hostId: string;
-  guesses: string[];
-  hints?: number[];
-  paths?: any[]; // Added for drawing sync
-  turnStartTime?: any; // Added for robust timer
-};
+  round: number;
+  maxRounds?: number;
+  scores?: Record<string, number>;
+  winner?: string;
+  guesses?: any[]; // Added guesses to interface
+  roundEndTimestamp?: number;
+}
 
-export default function GameScreen() {
+export default function GameRoom() {
   const { id } = useLocalSearchParams();
   const router = useRouter();
-  const [gameState, setGameState] = useState<GameState | null>(null);
-  const [currentUser, setCurrentUser] = useState(auth.currentUser);
-  const [timeLeft, setTimeLeft] = useState(60);
+  const [gameData, setGameData] = useState<GameData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [currentColor, setCurrentColor] = useState("#000000");
+  const [currentWidth, setCurrentWidth] = useState(3);
 
-  // Drawing State
-  const [paths, setPaths] = useState<DrawingPath[]>([]);
-  const [currentPath, setCurrentPath] = useState<DrawingPath | null>(null);
-  const [selectedColor, setSelectedColor] = useState("#000000");
-  const [previousColor, setPreviousColor] = useState("#000000");
-  const [strokeWidth, setStrokeWidth] = useState(3);
-  const [isEraser, setIsEraser] = useState(false);
+  // Ref to prevent overlapping updates
+  const isUpdating = useRef(false);
 
-  const [allWords, setAllWords] = useState<string[]>(FALLBACK_WORD_LIST);
-  const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const [playerNames, setPlayerNames] = useState<Record<string, string>>({});
-  const slideAnim = useRef(new Animated.Value(-width * 0.8)).current;
-  const [customWord, setCustomWord] = useState("");
-
-  // Ref to access latest state inside intervals without triggering re-renders
-  const gameStateRef = useRef<GameState | null>(null);
-  useEffect(() => {
-    gameStateRef.current = gameState;
-  }, [gameState]);
-
-  const processingRoundEnd = useRef(false);
-  const isLeaving = useRef(false);
-
-  // Invite State
+  const [showPlayersMenu, setShowPlayersMenu] = useState(false);
+  const [playersList, setPlayersList] = useState<any[]>([]);
+  const [showLobbyVisible, setShowLobbyVisible] = useState(false);
   const [showInviteModal, setShowInviteModal] = useState(false);
-  const [friends, setFriends] = useState<any[]>([]);
-  const [loadingFriends, setLoadingFriends] = useState(false);
 
-  // Use local interface or any to avoid import errors
-  const canvasRef = useRef<any>(null);
+  const TOTAL_ROUNDS_FALLBACK = 5; // fallback rounds if none provided
+  const slideAnim = useRef(new Animated.Value(0)).current; // 0 closed, 1 open
 
-  const fetchFriends = async () => {
-    if (!currentUser) return;
-    setLoadingFriends(true);
-    try {
-      const userDoc = await getDoc(doc(db, "users", currentUser.uid));
-      if (userDoc.exists()) {
-        const friendIds = userDoc.data().friends || [];
-        if (friendIds.length > 0) {
-          const chunks = [];
-          for (let i = 0; i < friendIds.length; i += 10) {
-            chunks.push(friendIds.slice(i, i + 10));
-          }
-          const loadedFriends: any[] = [];
-          for (const chunk of chunks) {
-            const q = query(
-              collection(db, "users"),
-              where("__name__", "in", chunk)
-            );
-            const snap = await getDocs(q);
-            snap.forEach((d) => loadedFriends.push({ id: d.id, ...d.data() }));
-          }
-          setFriends(loadedFriends);
-        } else {
-          setFriends([]);
-        }
-      }
-    } catch (e) {
-      console.error("Error fetching friends", e);
-      Alert.alert("Error", "Could not load friends list.");
-    } finally {
-      setLoadingFriends(false);
-    }
-  };
-
-  const handleInviteFriend = async (friendId: string, friendName: string) => {
-    try {
-      const myName =
-        playerNames[currentUser?.uid || ""] ||
-        currentUser?.displayName ||
-        "Friend";
-      await updateDoc(doc(db, "users", friendId), {
-        gameInvites: arrayUnion({
-          roomId: id,
-          inviterName: myName,
-          timestamp: Date.now(),
-        }),
-      });
-      Alert.alert("Sent", `Invite sent to ${friendName}!`);
-    } catch (e) {
-      console.error("Error sending invite", e);
-      Alert.alert("Error", "Failed to send invite.");
-    }
-  };
-
-  // --- FETCH ONLINE WORD LIST ---
   useEffect(() => {
-    const fetchWords = async () => {
-      try {
-        const response = await fetch(
-          "https://raw.githubusercontent.com/scribble-rs/scribble.rs/master/data/words_en.txt"
-        );
-        const text = await response.text();
-        const onlineWords = text
-          .split("\n")
-          .map((w) => w.trim())
-          .filter((w) => w.length >= 3 && w.length <= 25);
+    Animated.timing(slideAnim, {
+      toValue: showPlayersMenu ? 1 : 0,
+      duration: 220,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [showPlayersMenu, slideAnim]);
 
-        if (onlineWords.length > 100) {
-          console.log(
-            "Loaded " + onlineWords.length + " words from online dictionary."
-          );
-          setAllWords((prev) => [...prev, ...onlineWords]);
-        }
-      } catch (error) {
-        console.log(
-          "Failed to fetch online word list, using fallback dictionary.",
-          error
-        );
-      }
-    };
-    fetchWords();
-  }, []);
+  // control lobby visibility based on game status
+  useEffect(() => {
+    if (gameData?.status === "waiting") setShowLobbyVisible(true);
+    else setShowLobbyVisible(false);
+  }, [gameData?.status]);
+
+  const userId = auth.currentUser?.uid;
+
+  // Word selection and timer
+  const [candidateWords, setCandidateWords] = useState<string[]>([]);
+  const [remainingSeconds, setRemainingSeconds] = useState<number | null>(null);
 
   useEffect(() => {
     if (!id) return;
 
-    const gameDocRef = doc(db, "games", id as string);
-    const unsubscribe = onSnapshot(gameDocRef, (docSnap) => {
+    const gameRef = doc(db, "games", id as string);
+    const unsubscribe = onSnapshot(gameRef, (docSnap) => {
       if (docSnap.exists()) {
-        const data = docSnap.data() as GameState;
-        setGameState(data);
-
-        // SYNC PATHS: If paths exist in DB, parse them for the canvas
-        if (data.paths) {
-          // We optimize to not overwrite 'currentPath' (active drawing) logic
-          // but we need to ensure the main 'paths' array matches the server.
-          const loadedPaths = data.paths.map((p: any) => ({
-            ...p,
-            path: Skia.Path.MakeFromSVGString(p.pathString) || Skia.Path.Make(),
-          }));
-          setPaths(loadedPaths);
-        } else {
-          // New round or cleared
-          setPaths([]);
-        }
+        const data = docSnap.data() as GameData;
+        setGameData(data);
       } else {
         Alert.alert("Error", "Game not found");
         router.replace("/");
       }
+      setLoading(false);
     });
 
     return () => unsubscribe();
   }, [id]);
 
-  // Join game if not already in
+  // Generate candidate words for drawer when they become the current drawer
   useEffect(() => {
-    if (gameState && currentUser && id && !isLeaving.current) {
-      if (!gameState.players.includes(currentUser.uid)) {
-        // Notify chat that player joined
-        addDoc(collection(db, "games", id as string, "messages"), {
-          userId: "system",
-          userName: "System",
-          text: `${currentUser.displayName || "A player"} joined.`,
-          isSystem: true,
-          timestamp: serverTimestamp(),
+    const isDrawer = gameData?.currentDrawer === userId;
+    const currentWord =
+      (gameData as any)?.word ?? (gameData as any)?.currentWord;
+
+    const filterWord = (w: string) => {
+      if (!w) return false;
+      // normalize and remove extra spacing
+      const n = w.trim();
+      // allow spaces and letters, exclude digits/punctuation
+      if (!/^[A-Za-z\s'-]+$/.test(n)) return false;
+      const len = n.replace(/\s+/g, "").length; // length excluding spaces
+      return len >= 3 && len <= 12;
+    };
+
+    const pickRandom = (arr: string[], count: number) => {
+      const copy = arr.slice();
+      const res: string[] = [];
+      for (let i = 0; i < count && copy.length > 0; i++) {
+        const idx = Math.floor(Math.random() * copy.length);
+        res.push(copy.splice(idx, 1)[0]);
+      }
+      return res;
+    };
+
+    const fetchRemoteWords = async () => {
+      try {
+        // Try Random Word API (vercel). Returns lowercase single words.
+        const resp = await fetch(
+          "https://random-word-api.vercel.app/api?words=60"
+        );
+        if (!resp.ok) throw new Error("remote word fetch failed");
+        const words: string[] = (await resp.json()).map((w: string) =>
+          w.toUpperCase()
+        );
+        const filtered = words.filter(filterWord);
+        if (filtered.length >= 3) return filtered;
+
+        // fallback: try Datamuse for more varied words (may include multi-word phrases)
+        const dm = await fetch(
+          "https://api.datamuse.com/words?ml=object&max=100"
+        );
+        if (dm.ok) {
+          const dmJson = await dm.json();
+          const candidates = dmJson
+            .map((x: any) => (x.word || "").toString().toUpperCase())
+            .filter(filterWord);
+          if (candidates.length >= 3) return candidates;
+        }
+      } catch (e) {
+        // ignore errors and allow fallback to local pool
+        console.warn("remote words unavailable", e);
+      }
+      return null;
+    };
+
+    if (isDrawer && !currentWord) {
+      (async () => {
+        const remote = await fetchRemoteWords();
+        if (remote && remote.length > 0) {
+          setCandidateWords(pickRandom(remote, 3));
+          return;
+        }
+
+        // Fallback to local WORDS_POOL, prefer less-childish by filtering length
+        const localFiltered = WORDS_POOL.filter(filterWord).map((w) =>
+          w.toUpperCase()
+        );
+        if (localFiltered.length >= 3) {
+          setCandidateWords(pickRandom(localFiltered, 3));
+        } else {
+          // final fallback: pick any from pool
+          setCandidateWords(pickRandom(WORDS_POOL.slice(), 3));
+        }
+      })();
+    } else {
+      setCandidateWords([]);
+    }
+  }, [gameData?.currentDrawer, userId, gameData]);
+
+  // Countdown based on gameData.roundEndTimestamp
+  useEffect(() => {
+    let timer: any = null;
+    const endTs = (gameData as any)?.roundEndTimestamp;
+    if (endTs) {
+      const update = () => {
+        const secs = Math.max(0, Math.ceil((endTs - Date.now()) / 1000));
+        setRemainingSeconds(secs);
+        if (secs <= 0) clearInterval(timer);
+      };
+      update();
+      timer = setInterval(update, 1000);
+    } else {
+      setRemainingSeconds(null);
+    }
+    return () => clearInterval(timer);
+  }, [gameData?.round, gameData?.roundEndTimestamp]);
+
+  // When time runs out, immediately advance the turn to the next player.
+  // Use a ref to ensure we only process a given roundEndTimestamp once.
+  const timeoutProcessedRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (remainingSeconds !== 0) return;
+    if (!id || !gameData) return;
+    if (gameData.status !== "playing") return;
+    const endTs = (gameData as any)?.roundEndTimestamp;
+    if (!endTs) return;
+    if (timeoutProcessedRef.current === endTs) return; // already processed
+    timeoutProcessedRef.current = endTs;
+
+    (async () => {
+      try {
+        const gameRef = doc(db, "games", id as string);
+        await runTransaction(db, async (tx) => {
+          const snap = await tx.get(gameRef);
+          if (!snap.exists()) return;
+          const data = snap.data() as any;
+
+          const playersRaw = Array.isArray(data.players) ? data.players : [];
+          const players: string[] = playersRaw.map((p: any) =>
+            typeof p === "string" ? p : p?.uid || p
+          );
+          const currentDrawer: string = data.currentDrawer;
+
+          // Determine next drawer and whether the round should increment
+          let nextDrawer = currentDrawer;
+          let shouldIncrementRound = false;
+          if (players.length > 1) {
+            const foundIdx = players.findIndex((p) => p === currentDrawer);
+            const idx = foundIdx >= 0 ? foundIdx : 0;
+            const nextIdx = (idx + 1) % players.length;
+            nextDrawer = players[nextIdx];
+            if (nextIdx <= idx) shouldIncrementRound = true;
+          }
+
+          const nextRound = (data.round || 1) + (shouldIncrementRound ? 1 : 0);
+          const maxRounds = data.maxRounds || TOTAL_ROUNDS_FALLBACK;
+          const newStatus = nextRound > maxRounds ? "finished" : "playing";
+          const newRoundEnd =
+            newStatus === "playing" ? Date.now() + 120000 : null;
+
+          const updateObj: any = {
+            strokes: [],
+            word: "",
+            currentWord: "",
+            guessed: [],
+            round: nextRound,
+            currentDrawer: nextDrawer,
+            status: newStatus,
+          };
+          // set or clear roundEndTimestamp depending on status
+          updateObj.roundEndTimestamp = newRoundEnd;
+
+          tx.update(gameRef, updateObj);
+        });
+      } catch (e) {
+        console.error("advance on timeout failed", e);
+      }
+    })();
+  }, [remainingSeconds, id, gameData]);
+
+  // Ensure current user is added to the room players list once (on mount), and removed on unmount.
+  useEffect(() => {
+    if (!id || !userId) return;
+    const gameRef = doc(db, "games", id as string);
+    let joined = false;
+
+    (async () => {
+      try {
+        const snap = await getDoc(gameRef);
+        const players = snap.exists() ? (snap.data() as any).players || [] : [];
+        const already = players.some((p: any) =>
+          typeof p === "string" ? p === userId : p?.uid === userId
+        );
+        if (!already) {
+          try {
+            await updateDoc(gameRef, { players: arrayUnion(userId) });
+          } catch (e) {
+            console.error("Failed to join room", e);
+          }
+          try {
+            const scoreObj: any = {};
+            scoreObj[`scores.${userId}`] = 0;
+            await updateDoc(gameRef, scoreObj);
+          } catch (e) {}
+          try {
+            await addDoc(collection(db, "games", id as string, "messages"), {
+              isSystem: true,
+              systemType: "join",
+              text: `${
+                auth.currentUser?.displayName || "A player"
+              } joined the game`,
+              timestamp: serverTimestamp(),
+            });
+          } catch (e) {}
+        }
+        joined = true;
+      } catch (e) {
+        console.error("join effect error", e);
+      }
+    })();
+
+    return () => {
+      (async () => {
+        if (!joined) return;
+        try {
+          await updateDoc(gameRef, { players: arrayRemove(userId) });
+        } catch (e) {}
+        try {
+          await addDoc(collection(db, "games", id as string, "messages"), {
+            isSystem: true,
+            systemType: "leave",
+            text: `${
+              auth.currentUser?.displayName || "A player"
+            } left the game`,
+            timestamp: serverTimestamp(),
+          });
+        } catch (e) {}
+      })();
+    };
+  }, [id, userId]);
+
+  useEffect(() => {
+    if (!gameData) return;
+    (async () => {
+      try {
+        const promises = (gameData.players || []).map(async (p: any) => {
+          if (typeof p === "string") {
+            try {
+              const userDoc = await getDoc(doc(db, "users", p));
+              const data = userDoc.exists() ? userDoc.data() : null;
+              return {
+                uid: p,
+                displayName:
+                  data?.username ||
+                  data?.displayName ||
+                  (p === userId ? auth.currentUser?.displayName : undefined) ||
+                  p,
+                points: gameData.scores ? gameData.scores[p] ?? 0 : 0,
+                avatar: data?.avatarUrl || data?.photoURL || null,
+              };
+            } catch (e) {
+              return {
+                uid: p,
+                displayName: p,
+                points: gameData.scores ? gameData.scores[p] ?? 0 : 0,
+              };
+            }
+          } else {
+            return {
+              uid: p.uid,
+              displayName: p.displayName || p.username || p.uid,
+              points: gameData.scores
+                ? gameData.scores[p.uid] ?? 0
+                : p.points ?? 0,
+            };
+          }
         });
 
-        updateDoc(doc(db, "games", id as string), {
-          players: arrayUnion(currentUser.uid),
-          [`scores.${currentUser.uid}`]: 0,
-        }).catch((e) => console.error("Error joining game:", e));
+        const resolved = await Promise.all(promises);
+        // sort by points desc for convenience
+        resolved.sort((a: any, b: any) => (b.points || 0) - (a.points || 0));
+        setPlayersList(resolved);
+      } catch (e) {
+        console.error("Error building players list", e);
       }
-    }
-  }, [gameState, currentUser, id]);
+    })();
+  }, [gameData, userId]);
 
-  // Fetch player names
-  useEffect(() => {
-    if (!gameState?.players) return;
-    const fetchNames = async () => {
-      const names: Record<string, string> = {};
-      for (const uid of gameState.players) {
-        if (playerNames[uid]) {
-          names[uid] = playerNames[uid];
-          continue;
-        }
-        try {
-          const userDoc = await getDoc(doc(db, "users", uid));
-          names[uid] = userDoc.exists() ? userDoc.data().username : "Player";
-        } catch {
-          names[uid] = "Player";
-        }
-      }
-      setPlayerNames(names);
-    };
-    fetchNames();
-  }, [gameState?.players]);
-
-  const getWordChoices = () => {
-    const choices = new Set<string>();
-    let attempts = 0;
-    while (choices.size < 3 && attempts < 50) {
-      const randomIndex = Math.floor(Math.random() * allWords.length);
-      const w = allWords[randomIndex];
-      if (w) choices.add(w);
-      attempts++;
-    }
-    return Array.from(choices);
-  };
-
-  const handleNextRound = async () => {
-    if (!gameState || !id || processingRoundEnd.current) return;
-    processingRoundEnd.current = true;
-
-    // Calculate total turns (Cycles * Players)
-    const totalTurns = gameState.maxRounds * gameState.players.length;
-
-    if (gameState.round >= totalTurns) {
-      await updateDoc(doc(db, "games", id as string), {
-        status: "finished",
-      });
+  const handleStrokeFinished = async (newStroke: Stroke) => {
+    if (!gameData || gameData.currentDrawer !== userId || isUpdating.current)
       return;
-    }
-
-    const currentPlayerIndex = gameState.players.indexOf(
-      gameState.currentDrawer
-    );
-    const nextPlayerIndex = (currentPlayerIndex + 1) % gameState.players.length;
-    const nextDrawer = gameState.players[nextPlayerIndex];
-
-    const choices = getWordChoices();
-
-    await updateDoc(doc(db, "games", id as string), {
-      currentDrawer: nextDrawer,
-      currentWord: "", // Empty indicates choosing phase
-      wordChoices: choices,
-      round: gameState.round + 1,
-      guesses: [],
-      hints: [],
-      paths: [], // Clear canvas
-      turnStartTime: serverTimestamp(), // Sync timer
-    });
-
-    setPaths([]); // Clear local paths immediately
-  };
-
-  const handleSelectWord = async (word: string) => {
-    if (!id) return;
-    await updateDoc(doc(db, "games", id as string), {
-      currentWord: word,
-      wordChoices: [],
-      turnStartTime: serverTimestamp(), // Start the guessing timer
-    });
-  };
-
-  const startGame = async () => {
-    if (!gameState || !id) return;
-    const choices = getWordChoices();
-    await updateDoc(doc(db, "games", id as string), {
-      status: "playing",
-      currentWord: "",
-      wordChoices: choices,
-      round: 1,
-      guesses: [],
-      hints: [],
-      paths: [],
-      turnStartTime: serverTimestamp(),
-    });
-  };
-
-  // --- TIMER LOGIC (ROBUST) ---
-  useEffect(() => {
-    if (gameState?.status === "playing") {
-      processingRoundEnd.current = false;
-      const isHost = currentUser?.uid === gameState.hostId;
-
-      if (!gameState.currentWord) {
-        // --- CHOOSING PHASE (20s) ---
-        // Simple local timer for choosing is usually fine, but serverTime is better
-        // We'll stick to local for choosing to keep it snappy, but guard against stuck states
-        setTimeLeft(20);
-        const timer = setInterval(() => {
-          setTimeLeft((prev) => {
-            if (prev <= 1) {
-              // Time's up for choosing
-              clearInterval(timer);
-              if (isHost) {
-                // Auto-select random word
-                const choices = gameState.wordChoices || [];
-                const randomWord = choices[0] || "apple";
-                handleSelectWord(randomWord);
-              }
-              return 0;
-            }
-            return prev - 1;
-          });
-        }, 1000);
-        return () => clearInterval(timer);
-      } else {
-        // --- GUESSING PHASE (120s) ---
-        // Use server turnStartTime if available for accuracy
-        const calculateTime = () => {
-          if (gameState.turnStartTime?.seconds) {
-            const now = Date.now() / 1000;
-            const start = gameState.turnStartTime.seconds;
-            const elapsed = now - start;
-            const remaining = Math.max(0, Math.floor(120 - elapsed));
-            return remaining;
-          }
-          return 120; // Fallback
-        };
-
-        setTimeLeft(calculateTime()); // Initial set
-
-        const timer = setInterval(() => {
-          const remaining = calculateTime();
-          setTimeLeft(remaining);
-
-          if (remaining <= 0) {
-            clearInterval(timer);
-            if (isHost) {
-              handleNextRound();
-            }
-          }
-        }, 1000);
-        return () => clearInterval(timer);
-      }
-    }
-  }, [gameState?.status, gameState?.currentWord, gameState?.turnStartTime]);
-  // Dependency on turnStartTime ensures we don't reset unless the SERVER says the turn reset.
-  // Drawing strokes does NOT change turnStartTime, so this fixes the bug.
-
-  // Check for early round end (all guessed)
-  useEffect(() => {
-    if (
-      gameState?.status === "playing" &&
-      gameState.guesses &&
-      gameState.players
-    ) {
-      const guessersCount = gameState.players.length - 1;
-      if (guessersCount > 0 && gameState.guesses.length >= guessersCount) {
-        if (currentUser?.uid === gameState.hostId) {
-          handleNextRound();
-        }
-      }
-    }
-  }, [gameState?.guesses?.length]);
-
-  const handleCorrectGuess = async (userId: string) => {
-    if (!id || !gameState) return;
-    if (gameState.guesses.includes(userId)) return; // Prevent double points
-
-    // Scoring Formula
-    const guesserPoints = 50 + timeLeft * 2;
-    const drawerPoints = 20 + Math.floor(timeLeft * 0.5);
-
-    await updateDoc(doc(db, "games", id as string), {
-      guesses: arrayUnion(userId),
-      [`scores.${userId}`]: increment(guesserPoints),
-      [`scores.${gameState.currentDrawer}`]: increment(drawerPoints),
-    });
-  };
-
-  const handlePlayAgain = async () => {
-    if (!id || !gameState) return;
-
-    const resetScores: Record<string, number> = {};
-    gameState.players.forEach((uid) => (resetScores[uid] = 0));
-
-    await updateDoc(doc(db, "games", id as string), {
-      status: "waiting",
-      round: 1,
-      currentWord: "",
-      guesses: [],
-      scores: resetScores,
-      paths: [],
-    });
-  };
-
-  // --- DRAWING HANDLERS ---
-  const isDrawer = gameState?.currentDrawer === currentUser?.uid;
-
-  const handleStrokeStart = (x: number, y: number) => {
-    if (!isDrawer) return;
-    const newPath = Skia.Path.Make();
-    newPath.moveTo(x, y);
-    setCurrentPath({
-      path: newPath,
-      color: selectedColor,
-      strokeWidth: strokeWidth,
-    });
-  };
-
-  const handleStrokeActive = (x: number, y: number) => {
-    if (!isDrawer || !currentPath) return;
-    currentPath.path.lineTo(x, y);
-    // Force re-render for local smoothness
-    setCurrentPath({ ...currentPath });
-  };
-
-  const handleStrokeEnd = async () => {
-    if (!isDrawer || !currentPath || !id) return;
-
-    // Optimistic update
-    const newPaths = [...paths, currentPath];
-    setPaths(newPaths);
-    setCurrentPath(null);
-
-    // Sync to Firestore
-    const pathData = {
-      pathString: currentPath.path.toSVGString(),
-      color: currentPath.color,
-      strokeWidth: currentPath.strokeWidth,
-    };
 
     try {
-      await updateDoc(doc(db, "games", id as string), {
-        paths: arrayUnion(pathData),
+      isUpdating.current = true;
+      const gameRef = doc(db, "games", id as string);
+
+      // We append ONLY the new stroke to the array.
+      await updateDoc(gameRef, {
+        strokes: arrayUnion(newStroke),
       });
-    } catch (err) {
-      console.error("Failed to save stroke", err);
+    } catch (error) {
+      console.error("Error saving stroke:", error);
+    } finally {
+      isUpdating.current = false;
     }
   };
 
-  const handleClear = async () => {
-    setPaths([]);
-    if (id) {
-      await updateDoc(doc(db, "games", id as string), {
-        paths: [],
+  const handleClearCanvas = async () => {
+    if (!gameData || gameData.currentDrawer !== userId) return;
+    try {
+      const gameRef = doc(db, "games", id as string);
+      await updateDoc(gameRef, {
+        strokes: [], // Reset strokes
       });
+    } catch (error) {
+      console.error("Error clearing canvas:", error);
     }
   };
 
   const handleUndo = async () => {
-    // Local undo
-    if (paths.length === 0) return;
-    const newPaths = paths.slice(0, -1);
-    setPaths(newPaths);
-
-    // Firestore Undo (requires rewriting the whole array)
-    // This is expensive but necessary for undo
-    if (id) {
-      const serializedPaths = newPaths.map((p) => ({
-        pathString: p.path.toSVGString(),
-        color: p.color,
-        strokeWidth: p.strokeWidth,
-      }));
-      await updateDoc(doc(db, "games", id as string), {
-        paths: serializedPaths,
-      });
+    if (!gameData || gameData.currentDrawer !== userId) return;
+    try {
+      const gameRef = doc(db, "games", id as string);
+      const snap = await getDoc(gameRef);
+      if (!snap.exists()) return;
+      const data = snap.data() as any;
+      const strokes = Array.isArray(data.strokes) ? data.strokes.slice() : [];
+      if (strokes.length === 0) return;
+      strokes.pop();
+      await updateDoc(gameRef, { strokes });
+    } catch (e) {
+      console.error("Undo failed", e);
     }
   };
 
-  const toggleMenu = () => {
-    if (isMenuOpen) {
-      Animated.timing(slideAnim, {
-        toValue: -width * 0.8,
-        duration: 300,
-        useNativeDriver: true,
-      }).start(() => setIsMenuOpen(false));
-    } else {
-      setIsMenuOpen(true);
-      Animated.timing(slideAnim, {
-        toValue: 0,
-        duration: 300,
-        useNativeDriver: true,
-      }).start();
-    }
-  };
-
-  const copyRoomCode = async () => {
-    if (id) {
+  const copyRoomIdToClipboard = async () => {
+    if (!id) return;
+    try {
       await Clipboard.setStringAsync(id as string);
-      Alert.alert("Copied", "Room code copied to clipboard!");
+      Alert.alert("Copied", "Room code copied to clipboard");
+    } catch (e) {
+      console.error("Failed to copy room id", e);
     }
   };
 
-  const handleLeaveGame = () => {
-    Alert.alert("Leave Game", "Are you sure?", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Leave",
-        style: "destructive",
-        onPress: async () => {
-          isLeaving.current = true;
-          if (id && currentUser) {
-            // Notify chat that player left
-            await addDoc(collection(db, "games", id as string, "messages"), {
-              userId: "system",
-              userName: "System",
-              text: `${
-                playerNames[currentUser.uid] ||
-                currentUser.displayName ||
-                "A player"
-              } left.`,
-              isSystem: true,
-              timestamp: serverTimestamp(),
-            });
-            // Remove player from game
-            await updateDoc(doc(db, "games", id as string), {
-              players: arrayRemove(currentUser.uid),
-            });
-          }
-          router.replace("/");
-        },
-      },
-    ]);
+  const handleStartGame = async () => {
+    if (!gameData) return;
+    if (gameData.hostId !== userId) {
+      Alert.alert("Only host", "Only the host can start the game.");
+      return;
+    }
+    if ((gameData.players?.length || 0) < 2) {
+      Alert.alert(
+        "Need more players",
+        "At least 2 players are required to start the game."
+      );
+      return;
+    }
+
+    try {
+      const gameRef = doc(db, "games", id as string);
+      const firstDrawer = gameData.players[0]?.uid || gameData.players[0];
+      const roundEnd = Date.now() + 120000; // 120s
+      await updateDoc(gameRef, {
+        status: "playing",
+        round: 1,
+        currentDrawer: firstDrawer,
+        strokes: [],
+        guesses: [],
+        guessed: [],
+        roundEndTimestamp: roundEnd,
+        word: "",
+        currentWord: "",
+      });
+    } catch (error) {
+      console.error("Error starting game", error);
+    }
   };
 
-  if (!gameState)
+  const handleCorrectGuess = async (guesserId: string) => {
+    if (!id) return;
+    const gameRef = doc(db, "games", id as string);
+
+    try {
+      await runTransaction(db, async (tx) => {
+        const snap = await tx.get(gameRef);
+        if (!snap.exists()) return;
+        const data = snap.data() as any;
+
+        const playersRaw = Array.isArray(data.players) ? data.players : [];
+        const players: string[] = playersRaw.map((p: any) =>
+          typeof p === "string" ? p : p?.uid || p
+        );
+        const currentDrawer: string = data.currentDrawer;
+
+        const guessedArr: string[] = Array.isArray(data.guessed)
+          ? data.guessed.slice()
+          : [];
+
+        // If already recorded, no-op
+        if (guessedArr.includes(guesserId)) return;
+
+        // add the new guesser
+        guessedArr.push(guesserId);
+
+        // persist guessed array
+        tx.update(gameRef, { guessed: guessedArr });
+
+        // Determine non-drawer players who need to guess
+        const nonDrawerPlayers = players.filter((p) => p !== currentDrawer);
+
+        const allGuessed = nonDrawerPlayers.every((p) =>
+          guessedArr.includes(p)
+        );
+
+        if (!allGuessed) return; // wait for all to guess
+
+        // All players guessed: compute scoring and advance round immediately
+        const endTs = data.roundEndTimestamp || Date.now();
+        const remainingSeconds = Math.max(
+          0,
+          Math.ceil((endTs - Date.now()) / 1000)
+        );
+
+        // Scoring formula:
+        // - Each guesser gets 10 + remainingSeconds points
+        // - Drawer gets (5 + floor(remainingSeconds/2)) * numberOfGuessers
+        const guesserPoints = 10 + remainingSeconds;
+        const drawerPointsPerGuesser = 5 + Math.floor(remainingSeconds / 2);
+
+        const scoresObj: Record<string, number> = data.scores || {};
+
+        // Award points to each guesser (non-drawer players)
+        nonDrawerPlayers.forEach((uid) => {
+          if (guessedArr.includes(uid)) {
+            scoresObj[uid] = (scoresObj[uid] || 0) + guesserPoints;
+          }
+        });
+
+        // Award points to the drawer
+        const numGuessers = nonDrawerPlayers.filter((u) =>
+          guessedArr.includes(u)
+        ).length;
+        if (currentDrawer) {
+          scoresObj[currentDrawer] =
+            (scoresObj[currentDrawer] || 0) +
+            drawerPointsPerGuesser * numGuessers;
+        }
+
+        // Determine next drawer. Only advance the round when the drawer
+        // cycles back to the beginning of the players list (wraps around).
+        let nextDrawer = currentDrawer;
+        let shouldIncrementRound = false;
+        if (players.length > 1) {
+          const foundIdx = players.findIndex((p) => p === currentDrawer);
+          const idx = foundIdx >= 0 ? foundIdx : 0;
+          const nextIdx = (idx + 1) % players.length;
+          nextDrawer = players[nextIdx];
+          // If nextIdx wrapped to a lower or equal index, we've completed a cycle
+          // through all players and should increment the round.
+          if (nextIdx <= idx) shouldIncrementRound = true;
+        }
+
+        const nextRound = (data.round || 1) + (shouldIncrementRound ? 1 : 0);
+        const maxRounds = data.maxRounds || TOTAL_ROUNDS_FALLBACK;
+
+        const newStatus = nextRound > maxRounds ? "finished" : "playing";
+
+        const newRoundEnd = Date.now() + 120000; // reset timer for next round
+
+        // Update game doc to reflect round end and scoring
+        tx.update(gameRef, {
+          scores: scoresObj,
+          strokes: [],
+          word: "",
+          currentWord: "",
+          guessed: [],
+          round: nextRound,
+          currentDrawer: nextDrawer,
+          roundEndTimestamp: newRoundEnd,
+          status: newStatus,
+        });
+      });
+    } catch (e) {
+      console.error("handleCorrectGuess transaction failed", e);
+    }
+  };
+
+  if (loading) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#FF6B6B" />
-        <Text>Loading Game...</Text>
+        <ActivityIndicator size="large" color="#4F46E5" />
+        <Text style={styles.loadingText}>Loading Game Room...</Text>
       </View>
-    );
-
-  // --- GAME OVER SCREEN ---
-  if (gameState.status === "finished") {
-    const sortedPlayers = [...gameState.players].sort((a, b) => {
-      const scoreA = gameState.scores[a] || 0;
-      const scoreB = gameState.scores[b] || 0;
-      return scoreB - scoreA;
-    });
-
-    const top3 = sortedPlayers.slice(0, 3);
-
-    return (
-      <ImageBackground
-        source={require("../../assets/images/game_over.jpeg")}
-        style={styles.backgroundImage}
-        resizeMode="cover"
-      >
-        <SafeAreaView style={styles.resultsContainer}>
-          <Text style={styles.resultsTitle}>Game Over!</Text>
-
-          <View style={styles.podiumContainer}>
-            {/* 2nd Place */}
-            {top3[1] && (
-              <View style={[styles.podiumItem, styles.podium2]}>
-                <View style={styles.avatarLarge}>
-                  <Text style={styles.avatarTextLarge}>
-                    {playerNames[top3[1]]?.[0]?.toUpperCase()}
-                  </Text>
-                </View>
-                <Text style={styles.podiumName}>{playerNames[top3[1]]}</Text>
-                <Text style={styles.podiumScore}>
-                  {gameState.scores[top3[1]]} pts
-                </Text>
-                <View style={styles.bar2}>
-                  <Text style={styles.rankText}>2</Text>
-                </View>
-              </View>
-            )}
-
-            {/* 1st Place */}
-            {top3[0] && (
-              <View style={[styles.podiumItem, styles.podium1]}>
-                <Ionicons
-                  name="trophy"
-                  size={40}
-                  color="black"
-                  style={{ marginBottom: 2, borderColor: "#333" }}
-                />
-                <View
-                  style={[styles.avatarLarge, { backgroundColor: "#FFD700" }]}
-                >
-                  <Text style={styles.avatarTextLarge}>
-                    {playerNames[top3[0]]?.[0]?.toUpperCase()}
-                  </Text>
-                </View>
-                <Text style={styles.podiumName}>{playerNames[top3[0]]}</Text>
-                <Text style={styles.podiumScore}>
-                  {gameState.scores[top3[0]]} pts
-                </Text>
-                <View style={styles.bar1}>
-                  <Text style={styles.rankText}>1</Text>
-                </View>
-              </View>
-            )}
-
-            {/* 3rd Place */}
-            {top3[2] && (
-              <View style={[styles.podiumItem, styles.podium3]}>
-                <View style={styles.avatarLarge}>
-                  <Text style={styles.avatarTextLarge}>
-                    {playerNames[top3[2]]?.[0]?.toUpperCase()}
-                  </Text>
-                </View>
-                <Text style={styles.podiumName}>{playerNames[top3[2]]}</Text>
-                <Text style={styles.podiumScore}>
-                  {gameState.scores[top3[2]]} pts
-                </Text>
-                <View style={styles.bar3}>
-                  <Text style={styles.rankText}>3</Text>
-                </View>
-              </View>
-            )}
-          </View>
-
-          <View style={styles.resultButtons}>
-            <TouchableOpacity
-              style={styles.buttonPrimary}
-              onPress={handlePlayAgain}
-            >
-              <Text style={styles.buttonText}>Play Again</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.buttonSecondary}
-              onPress={() => router.replace("/")}
-            >
-              <Text style={styles.buttonTextSecondary}>Back to Home</Text>
-            </TouchableOpacity>
-          </View>
-        </SafeAreaView>
-      </ImageBackground>
     );
   }
 
-  const currentCycle = Math.ceil(gameState.round / gameState.players.length);
+  const isDrawer = gameData?.currentDrawer === userId;
+
+  const secretWord = gameData?.word ?? "";
+
+  const translateX = slideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [320, 0],
+  });
+
+  const handleExitFromPodium = () => {
+    router.replace("/");
+  };
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
-      {/* --- TOP HEADER --- */}
-      <View style={styles.header}>
-        <TouchableOpacity onPress={toggleMenu} style={styles.iconButton}>
-          <Ionicons name="menu" size={28} color="#333" />
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          onPress={copyRoomCode}
-          style={styles.roomCodeContainer}
-        >
-          <Text style={styles.roomCodeLabel}>Code: </Text>
-          <Text style={styles.roomCodeText}>{id}</Text>
-          <Ionicons
-            name="copy-outline"
-            size={16}
-            color="#666"
-            style={{ marginLeft: 4 }}
-          />
-        </TouchableOpacity>
-
-        <Text style={styles.roundInfo}>
-          Round {currentCycle}/{gameState.maxRounds}
-        </Text>
-      </View>
-
-      {/* --- STATUS & ACTIONS --- */}
-      <View style={styles.subHeader}>
-        <Text style={styles.statusText}>
-          {gameState.status === "waiting"
-            ? "Waiting..."
-            : isDrawer
-            ? "Draw!"
-            : `Guess: ${
-                gameState.currentWord
-                  ? gameState.currentWord
-                      .split("")
-                      .map((char, index) => {
-                        if (char === " ") return "  ";
-                        if (gameState.hints?.includes(index)) return char + " ";
-                        return "_ ";
-                      })
-                      .join("") + ` (${gameState.currentWord.length})`
-                  : "Choosing..."
-              }`}
-        </Text>
-
-        <View style={styles.actionButtons}>
-          <TouchableOpacity
-            onPress={() => Alert.alert("Saved", "Image saved!")}
-            style={styles.actionBtn}
-          >
-            <Ionicons name="save-outline" size={20} color="#333" />
-          </TouchableOpacity>
-          <TouchableOpacity onPress={handleLeaveGame} style={styles.actionBtn}>
-            <Ionicons name="exit-outline" size={20} color="#FF6B6B" />
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      {/* --- START GAME AREA --- */}
-      {gameState.status === "waiting" && (
-        <View style={styles.startArea}>
-          {currentUser?.uid === gameState.hostId ? (
-            <TouchableOpacity onPress={startGame} style={styles.startButton}>
-              <Text style={styles.startButtonText}>Start Game</Text>
-            </TouchableOpacity>
-          ) : (
-            <Text style={styles.waitingText}>Waiting for host to start...</Text>
-          )}
-        </View>
-      )}
-
-      <View style={styles.gameContainer}>
-        {/* Word Display (Only if playing) */}
-        {gameState.status === "playing" && (
-          <View style={styles.wordContainer}>
-            {isDrawer ? (
-              <View style={{ alignItems: "center" }}>
-                <Text style={styles.wordText}>
-                  Word:{" "}
-                  <Text style={styles.highlightWord}>
-                    {gameState.currentWord || "Choosing..."}
-                  </Text>
-                </Text>
-                <Text style={styles.timerText}>
-                  {gameState.currentWord ? `${timeLeft}s` : ""}
-                </Text>
-              </View>
-            ) : (
-              <Text style={styles.wordText}>
-                Time:{" "}
-                <Text style={styles.timerText}>
-                  {gameState.currentWord ? `${timeLeft}s` : "..."}
-                </Text>
-              </Text>
-            )}
-          </View>
-        )}
-
-        {gameState.status === "playing" && !gameState.currentWord ? (
-          <View style={styles.selectionOverlay}>
-            {isDrawer ? (
-              <View style={styles.selectionContent}>
-                <Text style={styles.selectionTitle}>Choose a Word</Text>
-                <View style={styles.choicesContainer}>
-                  {gameState.wordChoices?.map((word, index) => (
-                    <TouchableOpacity
-                      key={index}
-                      style={styles.choiceButton}
-                      onPress={() => handleSelectWord(word)}
-                    >
-                      <Text style={styles.choiceText}>{word}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-
-                <View style={styles.dividerContainer}>
-                  <View style={styles.dividerLine} />
-                  <Text style={styles.dividerText}>OR</Text>
-                  <View style={styles.dividerLine} />
-                </View>
-
-                <TextInput
-                  style={styles.customInput}
-                  placeholder="Type custom word (max 12 chars)"
-                  value={customWord}
-                  onChangeText={setCustomWord}
-                  maxLength={12}
-                />
-                <TouchableOpacity
-                  style={[styles.choiceButton, styles.customButton]}
-                  onPress={() => {
-                    if (customWord.trim().length > 0) {
-                      handleSelectWord(customWord.trim());
-                      setCustomWord("");
-                    }
-                  }}
-                >
-                  <Text style={[styles.choiceText, styles.customButtonText]}>
-                    Use Custom Word
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            ) : (
-              <View style={styles.selectionContent}>
-                <Text style={styles.waitingTextLarge}>
-                  {playerNames[gameState.currentDrawer] || "Drawer"} is choosing
-                  a word...
-                </Text>
-                <ActivityIndicator
-                  size="large"
-                  color="#333"
-                  style={{ marginTop: 20 }}
-                />
-              </View>
-            )}
-          </View>
-        ) : (
-          <>
-            <View style={styles.canvasContainer}>
-              <DrawingCanvas
-                ref={canvasRef}
-                paths={paths}
-                currentPath={currentPath}
-                onStrokeStart={handleStrokeStart}
-                onStrokeActive={handleStrokeActive}
-                onStrokeEnd={handleStrokeEnd}
-                isReadOnly={!isDrawer}
-                gameId={id as string}
-                initialSnapshot={null}
-              />
-            </View>
-
-            {isDrawer && (
-              <View style={styles.toolsContainer}>
-                <DrawingTools
-                  selectedColor={selectedColor}
-                  onSelectColor={setSelectedColor}
-                  strokeWidth={strokeWidth}
-                  onSelectStrokeWidth={setStrokeWidth}
-                  isEraser={isEraser}
-                  toggleEraser={() => {
-                    if (isEraser) {
-                      setIsEraser(false);
-                      setSelectedColor(previousColor);
-                    } else {
-                      setPreviousColor(selectedColor);
-                      setIsEraser(true);
-                      setSelectedColor("#FFFFFF");
-                    }
-                  }}
-                  onClear={handleClear}
-                  onUndo={handleUndo}
-                />
-              </View>
-            )}
-          </>
-        )}
-
-        <View style={styles.chatContainer}>
-          <ChatWindow
-            gameId={id as string}
-            currentUser={currentUser}
-            currentWord={gameState.currentWord}
-            isDrawer={isDrawer}
-            guesses={gameState.guesses}
-            onCorrectGuess={handleCorrectGuess}
-          />
-        </View>
-      </View>
-
-      {/* --- SIDE MENU --- */}
-      {isMenuOpen && (
-        <TouchableOpacity
-          style={styles.menuOverlay}
-          onPress={toggleMenu}
-          activeOpacity={1}
+    <View style={styles.container}>
+      {gameData?.status === "finished" && (
+        <Podium
+          players={playersList}
+          onExit={handleExitFromPodium}
+          onPlayAgain={handleStartGame}
         />
       )}
-      <Animated.View
-        style={[styles.sideMenu, { transform: [{ translateX: slideAnim }] }]}
-      >
-        <Text style={styles.menuTitle}>Players</Text>
-        <ScrollView style={styles.playerList}>
-          {gameState.players.map((uid) => {
-            const isDrawing = gameState.currentDrawer === uid;
-            const hasGuessed = gameState.guesses.includes(uid);
-            return (
-              <View key={uid} style={styles.playerItem}>
-                <View style={styles.avatar}>
-                  <Text style={styles.avatarText}>
-                    {playerNames[uid]?.[0]?.toUpperCase() || "P"}
-                  </Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.playerName}>
-                    {playerNames[uid] || "Loading..."}
-                  </Text>
-                  {isDrawing && (
-                    <Text style={styles.statusLabel}>✏️ Drawing</Text>
-                  )}
-                  {hasGuessed && (
-                    <Text style={[styles.statusLabel, { color: "#4caf50" }]}>
-                      ✅ Guessed
-                    </Text>
-                  )}
-                </View>
-                <Text style={styles.playerScore}>
-                  {gameState.scores[uid] || 0} pts
+      {gameData?.status === "finished" ? null : (
+        <>
+          {/* Header */}
+          <View style={styles.header}>
+            <TouchableOpacity
+              onPress={() => {
+                Alert.alert("Exit Game", "Leave this room?", [
+                  { text: "Cancel", style: "cancel" },
+                  {
+                    text: "Exit",
+                    style: "destructive",
+                    onPress: () => router.replace("/"),
+                  },
+                ]);
+              }}
+              style={styles.exitButton}
+            >
+              <Text style={styles.exitText}>Exit</Text>
+            </TouchableOpacity>
+            {remainingSeconds !== null && (
+              <View style={styles.timerBadge}>
+                <Text style={styles.timerText}>
+                  {Math.floor((remainingSeconds || 0) / 60)}:
+                  {String((remainingSeconds || 0) % 60).padStart(2, "0")}
                 </Text>
               </View>
-            );
-          })}
-        </ScrollView>
-        {gameState.status === "waiting" && (
-          <TouchableOpacity
-            style={styles.inviteBtn}
-            onPress={() => {
-              setShowInviteModal(true);
-              fetchFriends();
-            }}
-          >
-            <Text style={styles.inviteBtnText}>Invite Friends</Text>
-          </TouchableOpacity>
-        )}
-      </Animated.View>
-
-      {/* Invite Friends Modal */}
-      <Modal
-        visible={showInviteModal}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowInviteModal(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Invite Friends</Text>
-
-            {loadingFriends ? (
-              <ActivityIndicator size="large" color="#333" />
-            ) : friends.length === 0 ? (
-              <Text style={styles.emptyText}>No friends found.</Text>
-            ) : (
-              <ScrollView
-                style={styles.friendsList}
-                contentContainerStyle={{ paddingBottom: 20 }}
-              >
-                {friends.map((friend) => (
-                  <View key={friend.id} style={styles.friendRow}>
-                    <Text style={styles.friendNameText}>{friend.username}</Text>
-                    <TouchableOpacity
-                      style={styles.sendBtn}
-                      onPress={() =>
-                        handleInviteFriend(friend.id, friend.username)
-                      }
-                    >
-                      <Text style={styles.sendBtnText}>Invite</Text>
-                    </TouchableOpacity>
-                  </View>
-                ))}
-              </ScrollView>
             )}
-
+            {/* <View style={styles.headerCenter}> */}
+            <View style={styles.roomBar}>
+              <Text style={styles.roomText}>Code: {id}</Text>
+              <TouchableOpacity
+                onPress={copyRoomIdToClipboard}
+                style={styles.copyButton}
+              >
+                <Ionicons name="copy" size={18} color="#374151" />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.roundBadge}>
+              <Text style={styles.roundText}>
+                {gameData?.round ?? 0} /{" "}
+                {gameData?.maxRounds ?? TOTAL_ROUNDS_FALLBACK}
+              </Text>
+            </View>
             <TouchableOpacity
-              style={styles.closeBtn}
-              onPress={() => setShowInviteModal(false)}
+              onPress={() => setShowPlayersMenu((v) => !v)}
+              style={styles.playersToggle}
             >
-              <Text style={styles.closeBtnText}>Close</Text>
+              <Ionicons name="people" size={22} color="#333" />
             </TouchableOpacity>
           </View>
-        </View>
-      </Modal>
-    </SafeAreaView>
+
+          {/* Waiting lobby shown when room is in waiting state */}
+          <WaitingLobby
+            visible={showLobbyVisible}
+            onClose={() => setShowLobbyVisible(false)}
+            onLeave={() => router.replace("/")}
+            roomId={id as string}
+            players={playersList}
+            hostId={gameData?.hostId}
+            onStart={handleStartGame}
+          />
+
+          {/* Main Game Area */}
+          <View style={styles.gameContent}>
+            {/* Word selection panel for drawer before drawing */}
+            {gameData?.currentDrawer === userId &&
+              !((gameData as any)?.word || (gameData as any).currentWord) && (
+                <View style={styles.wordPicker}>
+                  <Text style={styles.wordPickerTitle}>
+                    Choose a word to draw
+                  </Text>
+                  <View style={styles.wordOptions}>
+                    {candidateWords.map((w) => (
+                      <TouchableOpacity
+                        key={w}
+                        style={styles.wordOption}
+                        onPress={async () => {
+                          try {
+                            const gameRef = doc(db, "games", id as string);
+                            const roundEnd = Date.now() + 120000;
+                            await updateDoc(gameRef, {
+                              word: w,
+                              currentWord: w,
+                              roundEndTimestamp: roundEnd,
+                              guessed: [],
+                            });
+                          } catch (e) {
+                            console.error("select word failed", e);
+                          }
+                        }}
+                      >
+                        <Text style={styles.wordOptionText}>{w}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+              )}
+            {/* Word Display */}
+            {isDrawer && gameData?.status === "playing" && (
+              <View style={styles.wordContainer}>
+                <Text style={styles.wordLabel}>Draw this:</Text>
+                <Text style={styles.secretWord}>{secretWord}</Text>
+              </View>
+            )}
+
+            {!isDrawer && gameData?.status === "playing" && (
+              <View style={styles.wordContainer}>
+                <Text style={styles.wordLabel}>Guess the word!</Text>
+                <View style={{ flexDirection: "row", alignItems: "center" }}>
+                  <Text style={styles.secretWord}>
+                    {secretWord
+                      .split("")
+                      .map((c) => (c === " " ? " " : "_ "))
+                      .join("")}
+                  </Text>
+                  <Text style={styles.wordLength}>
+                    ({(secretWord || "").replace(/\s+/g, "").length})
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            {/* Canvas - THIS Component receives 'color', 'strokeWidth', 'strokes' */}
+            <View style={styles.canvasContainer}>
+              <DrawingCanvas
+                color={currentColor}
+                strokeWidth={currentWidth}
+                enabled={isDrawer && gameData?.status === "playing"}
+                strokes={gameData?.strokes || []}
+                onStrokeFinished={handleStrokeFinished}
+              />
+
+              {/* Overlay tools positioned on top of canvas so they're always visible */}
+              {isDrawer && (
+                <View style={styles.toolsOverlay} pointerEvents="box-none">
+                  <DrawingTools
+                    selectedColor={currentColor}
+                    onSelectColor={setCurrentColor}
+                    strokeWidth={currentWidth}
+                    onSelectWidth={setCurrentWidth}
+                    onClear={handleClearCanvas}
+                    onUndo={handleUndo}
+                  />
+                </View>
+              )}
+            </View>
+          </View>
+
+          {/* Chat / Guesses */}
+          <View style={styles.chatContainer}>
+            <ChatWindow
+              gameId={id as string}
+              isDrawer={isDrawer}
+              currentWord={gameData?.word || ""}
+              currentUser={{
+                uid: auth.currentUser?.uid || "anon",
+                displayName: auth.currentUser?.displayName || "Player",
+              }}
+              guesses={gameData?.guesses || []}
+              onCorrectGuess={handleCorrectGuess}
+            />
+          </View>
+
+          {/* Player Menu Overlay (sliding) */}
+          <Animated.View
+            style={[styles.playersOverlay, { transform: [{ translateX }] }]}
+            pointerEvents={showPlayersMenu ? "auto" : "none"}
+          >
+            <View style={styles.playersHeader}>
+              <Text style={styles.playersTitle}>Players</Text>
+              <TouchableOpacity onPress={() => setShowPlayersMenu(false)}>
+                <Ionicons name="close" size={22} color="#111827" />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.playersList}>
+              {playersList.map((p: any) => (
+                <View key={p.uid} style={styles.playerRow}>
+                  <Text style={styles.playerName}>{p.displayName}</Text>
+                  <View style={styles.playerMeta}>
+                    <Text style={styles.playerPoints}>{p.points ?? 0} pts</Text>
+                    {gameData?.currentDrawer === p.uid && (
+                      <Text style={styles.drawerTag}>Drawing</Text>
+                    )}
+                  </View>
+                </View>
+              ))}
+            </View>
+            <View style={styles.playersFooter}>
+              <TouchableOpacity
+                style={styles.inviteButton}
+                onPress={() => setShowInviteModal(true)}
+              >
+                <Text style={styles.inviteText}>Invite Friends</Text>
+              </TouchableOpacity>
+            </View>
+          </Animated.View>
+          <InviteFriendsModal
+            visible={showInviteModal}
+            onClose={() => setShowInviteModal(false)}
+            roomId={id as string}
+          />
+        </>
+      )}
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
+  container: {
     flex: 1,
-    backgroundColor: "#F0F2F5",
+    backgroundColor: "#F3F4F6",
   },
-  backgroundImage: { flex: 1 },
   loadingContainer: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
   },
+  loadingText: {
+    marginTop: 10,
+    color: "#666",
+  },
   header: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 15,
-    paddingVertical: 12,
+    padding: 12,
+    paddingTop: 40,
+    backgroundColor: "white",
     borderBottomWidth: 1,
-    borderBottomColor: "#E4E6EB",
-    backgroundColor: "#F0F2F5",
+    borderBottomColor: "#E5E7EB",
+    justifyContent: "space-evenly",
   },
-  iconButton: {
-    padding: 4,
+  headerTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#1F2937",
   },
-  roomCodeContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#E4E6EB",
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 15,
-  },
-  roomCodeLabel: {
-    fontSize: 12,
-    color: "#666",
-  },
-  roomCodeText: {
-    fontSize: 14,
-    fontWeight: "bold",
-    color: "#333",
-  },
-  roundInfo: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#666",
-  },
-  subHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingHorizontal: 15,
-    paddingVertical: 8,
-    backgroundColor: "#F0F2F5",
+  statusBadge: {
+    backgroundColor: "#E0E7FF",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
   },
   statusText: {
-    fontSize: 16,
-    fontWeight: "bold",
-    color: "#333",
-  },
-  actionButtons: {
-    flexDirection: "row",
-    gap: 10,
-  },
-  actionBtn: {
-    padding: 6,
-    backgroundColor: "#E4E6EB",
-    borderRadius: 8,
-  },
-  startArea: {
-    padding: 10,
-    alignItems: "center",
-    backgroundColor: "#fff9f2",
-  },
-  startButton: {
-    backgroundColor: "#333",
-    paddingHorizontal: 30,
-    paddingVertical: 10,
-    borderRadius: 25,
-  },
-  startButtonText: {
-    color: "white",
-    fontWeight: "bold",
-    fontSize: 16,
-  },
-  waitingText: {
-    color: "#666",
-    fontStyle: "italic",
-  },
-  wordContainer: {
-    alignItems: "center",
-    paddingVertical: 5,
-    backgroundColor: "#F0F2F5",
-  },
-  wordText: {
-    fontSize: 18,
-    color: "#333",
-  },
-  highlightWord: {
-    fontWeight: "bold",
-    color: "#e27d4a",
-    textTransform: "uppercase",
-    fontSize: 20,
-  },
-  timerText: {
-    color: "#333",
-    fontWeight: "bold",
-    fontSize: 18,
-  },
-  statusLabel: {
-    color: "#e27d4a",
+    color: "#4338CA",
     fontSize: 12,
     fontWeight: "bold",
   },
-  gameContainer: {
-    flex: 1,
-    flexDirection: "column",
-    backgroundColor: "#F0F2F5",
+  gameContent: {
+    flex: 2,
+    padding: 10,
+  },
+  wordContainer: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 10,
+    gap: 10,
+  },
+  wordLabel: {
+    color: "#6B7280",
+    fontSize: 14,
+  },
+  secretWord: {
+    fontSize: 18,
+    fontWeight: "bold",
+    color: "#111827",
+    letterSpacing: 2,
   },
   canvasContainer: {
-    flex: 2,
+    flex: 1,
+    minHeight: 300,
     backgroundColor: "white",
-    margin: 10,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#E4E6EB",
-    overflow: "hidden",
-    elevation: 3,
+    borderRadius: 10,
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
+    shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.1,
-    shadowRadius: 4,
+    shadowRadius: 2,
+    elevation: 2,
+    marginBottom: 10,
+    position: "relative",
   },
-  toolsContainer: {
-    paddingHorizontal: 10,
-    marginBottom: 5,
+  toolsOverlay: {
+    position: "absolute",
+    left: 12,
+    right: 12,
+    bottom: 12,
+    alignItems: "center",
   },
   chatContainer: {
     flex: 1,
     backgroundColor: "white",
-    borderTopWidth: 1,
-    borderTopColor: "#E4E6EB",
-  },
-
-  // Menu Styles
-  menuOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.3)",
-    zIndex: 10,
-  },
-  sideMenu: {
-    position: "absolute",
-    left: 0,
-    top: 0,
-    bottom: 0,
-    width: width * 0.8,
-    backgroundColor: "white",
-    zIndex: 20,
-    padding: 20,
-    paddingTop: 50,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
     shadowColor: "#000",
-    shadowOffset: { width: 2, height: 0 },
-    shadowOpacity: 0.25,
-    shadowRadius: 5,
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
     elevation: 5,
+    overflow: "hidden",
   },
-  menuTitle: {
-    fontSize: 24,
-    fontWeight: "bold",
-    marginBottom: 20,
-    color: "#333",
-  },
-  playerList: {
+  headerCenter: {
     flex: 1,
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-evenly",
+    gap: 0,
   },
-  playerItem: {
+  roomBar: {
+    // marginLeft: 6,
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 15,
-    backgroundColor: "#f9f9f9",
-    padding: 10,
+    // gap: 8,
+    backgroundColor: "#E5E7EB",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  roomText: {
+    color: "#374151",
+    fontSize: 16,
+  },
+  copyButton: {
+    padding: 6,
+  },
+  roundBadge: {
+    backgroundColor: "#bccbffff",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
     borderRadius: 10,
+    // marginLeft: 6,
   },
-  avatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: "#e27d4a",
-    justifyContent: "center",
-    alignItems: "center",
-    marginRight: 10,
+  roundText: {
+    color: "#4338CA",
+    fontSize: 16,
   },
-  avatarText: { color: "white", fontWeight: "bold", fontSize: 18 },
-  playerName: { fontSize: 16, fontWeight: "600", color: "#333" },
-  playerScore: { fontSize: 14, fontWeight: "bold", color: "#666" },
-  inviteBtn: {
-    backgroundColor: "#333",
-    padding: 15,
-    borderRadius: 10,
-    alignItems: "center",
-    marginTop: 10,
+  playersToggle: {
+    padding: 8,
+    paddingHorizontal: 10,
+    // marginLeft: 8,
+    backgroundColor: "#E5E7EB",
+    borderRadius: 8,
   },
-  inviteBtnText: { color: "white", fontWeight: "bold", fontSize: 16 },
-
-  // Modal Styles
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
-    justifyContent: "center",
-    padding: 20,
+  headerStartButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: "#4338CA",
+    borderRadius: 8,
+    // marginLeft: 8,
   },
-  modalContent: {
+  headerStartText: {
+    color: "white",
+    fontWeight: "700",
+  },
+  exitButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: "#FEE2E2",
+    borderRadius: 8,
+    // marginRight: 8,
+  },
+  exitText: {
+    color: "#B91C1C",
+    fontWeight: "700",
+  },
+  timerBadge: {
+    backgroundColor: "#DBEAFE",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+    // marginRight: 8,
+  },
+  timerText: {
+    color: "#4338CA",
+    fontWeight: "700",
+    fontSize: 16,
+  },
+  playersOverlay: {
+    position: "absolute",
+    right: 12,
+    top: 100,
+    width: 300,
+    bottom: 20,
     backgroundColor: "white",
-    borderRadius: 20,
-    padding: 20,
-    maxHeight: "80%",
-    width: "100%",
-    maxWidth: 400,
-    alignSelf: "center",
+    borderRadius: 12,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 10,
+    padding: 12,
   },
-  modalTitle: {
-    fontSize: 24,
-    fontWeight: "bold",
-    marginBottom: 20,
-    textAlign: "center",
-    color: "#333",
-  },
-  friendsList: { width: "100%" },
-  friendRow: {
+  playersHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: "#eee",
+    marginBottom: 8,
   },
-  friendNameText: { fontSize: 16, fontWeight: "600", color: "#333" },
-  sendBtn: {
-    backgroundColor: "#333",
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-  },
-  sendBtnText: { color: "white", fontWeight: "bold", fontSize: 14 },
-  closeBtn: { marginTop: 20, alignSelf: "center", padding: 10 },
-  closeBtnText: { color: "#666", fontSize: 16, fontWeight: "600" },
-  emptyText: {
-    textAlign: "center",
-    color: "#999",
-    marginVertical: 20,
+  playersTitle: {
     fontSize: 16,
+    fontWeight: "700",
+    color: "#111827",
   },
-
-  // Results Screen
-  resultsContainer: {
+  playersList: {
     flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 20,
-    backgroundColor: "transparent",
-    margin: 20,
-    borderRadius: 20,
+    marginTop: 6,
   },
-  resultsTitle: {
-    fontSize: 36,
-    fontWeight: "bold",
-    color: "#333",
-    marginBottom: 30,
-  },
-  podiumContainer: {
+  playerRow: {
     flexDirection: "row",
-    alignItems: "flex-end",
-    justifyContent: "center",
-    marginBottom: 40,
-    height: 300,
-    borderBottomColor: "#333",
-    borderBottomWidth: 4,
-  },
-  podiumItem: {
+    justifyContent: "space-between",
     alignItems: "center",
-    justifyContent: "flex-end",
-    marginHorizontal: 5,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: "#F3F4F6",
   },
-  podium1: { zIndex: 10 },
-  podium2: {},
-  podium3: {},
-  avatarLarge: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: "#e27d4a",
-    justifyContent: "center",
-    alignItems: "center",
-    marginBottom: 5,
-    borderWidth: 2,
-    borderColor: "#333",
+  playerName: {
+    fontSize: 14,
+    color: "#111827",
   },
-  avatarTextLarge: { fontSize: 24, fontWeight: "bold", color: "white" },
-  podiumName: { fontWeight: "bold", color: "#333", marginBottom: 2 },
-  podiumScore: { fontSize: 12, color: "#666", marginBottom: 5 },
-  bar1: {
-    width: 80,
-    height: 150,
-    backgroundColor: "#FFD700",
-    borderTopLeftRadius: 10,
-    borderTopRightRadius: 10,
-    justifyContent: "center",
-    alignItems: "center",
-    borderColor: "#333",
-    borderWidth: 2,
-    borderBottomColor: "transparent",
-  },
-  bar2: {
-    width: 70,
-    height: 100,
-    backgroundColor: "#C0C0C0",
-    borderTopLeftRadius: 10,
-    borderTopRightRadius: 10,
-    justifyContent: "center",
-    alignItems: "center",
-    borderColor: "#333",
-    borderWidth: 2,
-    borderBottomColor: "transparent",
-  },
-  bar3: {
-    width: 70,
-    height: 70,
-    backgroundColor: "#CD7F32",
-    borderTopLeftRadius: 10,
-    borderTopRightRadius: 10,
-    justifyContent: "center",
-    alignItems: "center",
-    borderColor: "#333",
-    borderWidth: 2,
-    borderBottomColor: "transparent",
-  },
-  rankText: { fontSize: 24, fontWeight: "bold", color: "white", opacity: 0.8 },
-  resultButtons: { width: "100%", gap: 10 },
-  buttonPrimary: {
-    backgroundColor: "#333",
-    padding: 15,
-    borderRadius: 10,
-    alignItems: "center",
-  },
-  buttonText: { color: "white", fontWeight: "bold", fontSize: 18 },
-  buttonSecondary: {
-    backgroundColor: "transparent",
-    padding: 15,
-    borderRadius: 10,
-    alignItems: "center",
-    borderWidth: 2,
-    borderColor: "#333",
-  },
-  buttonTextSecondary: { color: "#333", fontWeight: "bold", fontSize: 18 },
-
-  // Selection Overlay
-  selectionOverlay: {
-    flex: 2,
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: "white",
-    margin: 10,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#E4E6EB",
-  },
-  selectionContent: {
-    width: "100%",
-    padding: 20,
-    alignItems: "center",
-  },
-  selectionTitle: {
-    fontSize: 20,
-    fontWeight: "bold",
-    marginBottom: 20,
-    color: "#333",
-  },
-  choicesContainer: {
-    width: "100%",
-    gap: 10,
-  },
-  choiceButton: {
-    backgroundColor: "#f0f2f5",
-    padding: 15,
-    borderRadius: 10,
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: "#ddd",
-  },
-  choiceText: {
-    fontSize: 18,
-    fontWeight: "600",
-    color: "#333",
-    textTransform: "capitalize",
-  },
-  waitingTextLarge: {
-    fontSize: 18,
-    color: "#666",
-    textAlign: "center",
-  },
-  dividerContainer: {
+  playerMeta: {
     flexDirection: "row",
     alignItems: "center",
-    marginVertical: 15,
-    width: "100%",
+    gap: 8,
   },
-  dividerLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: "#ddd",
-  },
-  dividerText: {
-    marginHorizontal: 10,
-    color: "#999",
-    fontWeight: "bold",
+  playerPoints: {
+    color: "#6B7280",
     fontSize: 12,
   },
-  customInput: {
-    width: "100%",
-    backgroundColor: "#f9f9f9",
-    borderWidth: 1,
-    borderColor: "#ddd",
+  drawerTag: {
+    backgroundColor: "#E0E7FF",
+    color: "#4338CA",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
     borderRadius: 10,
-    padding: 12,
-    fontSize: 16,
-    marginBottom: 10,
+    fontSize: 12,
+    overflow: "hidden",
   },
-  customButton: {
-    backgroundColor: "#333",
-    borderColor: "#333",
-    width: "100%",
+  playersFooter: {
+    marginTop: 10,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: 8,
   },
-  customButtonText: {
+  inviteButton: {
+    flex: 1,
+    backgroundColor: "#F3F4F6",
+    padding: 10,
+    borderRadius: 8,
+    alignItems: "center",
+  },
+  inviteText: {
+    color: "#374151",
+    fontWeight: "600",
+  },
+  startButton: {
+    flex: 1,
+    backgroundColor: "#4338CA",
+    padding: 10,
+    borderRadius: 8,
+    alignItems: "center",
+  },
+  startText: {
     color: "white",
+    fontWeight: "700",
+  },
+  wordPicker: {
+    padding: 16,
+    backgroundColor: "#FEF3C7",
+    borderRadius: 12,
+    marginBottom: 12,
+    alignItems: "center",
+  },
+  wordPickerTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#111827",
+    marginBottom: 12,
+  },
+  wordLength: {
+    marginLeft: 2,
+    color: "#6B7280",
+    fontSize: 16,
+  },
+  wordOptions: {
+    flexDirection: "row",
+    gap: 8,
+    justifyContent: "center",
+    flexWrap: "wrap",
+  },
+  wordOption: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: "#FBBF24",
+    borderRadius: 8,
+  },
+  wordOptionText: {
+    color: "#111827",
+    fontWeight: "600",
+    fontSize: 14,
   },
 });
