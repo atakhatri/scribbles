@@ -419,10 +419,7 @@ const styles = StyleSheet.create({
     position: "relative",
     borderWidth: 3,
     borderColor: "white",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
+    boxShadow: "0px 2px 4px rgba(0,0,0,0.3)",
     elevation: 5,
   },
   avatarImage: {
@@ -494,10 +491,7 @@ const styles = StyleSheet.create({
     zIndex: 20,
     padding: 20,
     paddingTop: 60,
-    shadowColor: "#000",
-    shadowOffset: { width: -2, height: 0 },
-    shadowOpacity: 0.2,
-    shadowRadius: 5,
+    boxShadow: "-2px 0px 5px rgba(0,0,0,0.2)",
     elevation: 5,
   },
   settingsTitle: {

@@ -220,10 +220,7 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 8,
     borderTopRightRadius: 8,
     marginTop: 8,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
+    boxShadow: "0px 2px 4px rgba(0,0,0,0.1)",
     elevation: 3,
   },
   goldBar: {
@@ -310,10 +307,7 @@ const styles = StyleSheet.create({
   crown: {
     marginBottom: -12,
     zIndex: 10,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 2,
+    boxShadow: "0px 2px 2px rgba(0,0,0,0.2)",
   },
   name: {
     fontSize: 14,
@@ -357,10 +351,7 @@ const styles = StyleSheet.create({
     minWidth: 140,
     alignItems: "center",
     justifyContent: "center",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 3,
+    boxShadow: "0px 2px 3px rgba(0,0,0,0.1)",
     elevation: 5,
   },
   exitButton: {
