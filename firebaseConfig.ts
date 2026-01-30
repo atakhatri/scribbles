@@ -24,9 +24,13 @@ let auth: Auth;
 try {
     // Explicitly initialize Auth with AsyncStorage persistence.
     // This is critical for keeping the user logged in after a restart.
-    auth = initializeAuth(app, {
-        persistence: getReactNativePersistence(AsyncStorage),
-    });
+    if (typeof getReactNativePersistence === 'function') {
+        auth = initializeAuth(app, {
+            persistence: getReactNativePersistence(AsyncStorage),
+        });
+    } else {
+        auth = getAuth(app);
+    }
 } catch (error) {
     // If initializeAuth fails (e.g. if auth instance already exists), fall back to getAuth
     // which generally attempts to auto-detect persistence.
