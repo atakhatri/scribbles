@@ -6,7 +6,7 @@ import {
   StyleSheet,
   View,
 } from "react-native";
-import Svg, { Path } from "react-native-svg";
+import Svg, { Path, Rect } from "react-native-svg";
 
 const { width, height } = Dimensions.get("window");
 
@@ -22,6 +22,7 @@ interface Stroke {
   path: string; // The SVG path string (d attribute)
   color: string;
   width: number;
+  fill?: boolean;
 }
 
 interface DrawingCanvasProps {
@@ -48,7 +49,7 @@ export default function DrawingCanvas({
     if (points.length === 0) return "";
     if (points.length < 2) {
       return `M ${round(points[0].x)},${round(points[0].y)} L ${round(
-        points[0].x
+        points[0].x,
       )},${round(points[0].y)}`;
     }
 
@@ -87,7 +88,7 @@ export default function DrawingCanvas({
             if (!last) return [{ x: locationX, y: locationY }];
 
             const dist = Math.sqrt(
-              Math.pow(locationX - last.x, 2) + Math.pow(locationY - last.y, 2)
+              Math.pow(locationX - last.x, 2) + Math.pow(locationY - last.y, 2),
             );
             if (dist > 2) {
               return [...prev, { x: locationX, y: locationY }];
@@ -110,7 +111,7 @@ export default function DrawingCanvas({
           });
         },
       }),
-    [enabled, color, strokeWidth, onStrokeFinished]
+    [enabled, color, strokeWidth, onStrokeFinished],
   );
 
   // Calculate current path string for rendering the "live" line
@@ -120,17 +121,32 @@ export default function DrawingCanvas({
     <View style={styles.container} {...panResponder.panHandlers}>
       <Svg style={StyleSheet.absoluteFill}>
         {/* 1. Render Commited Strokes (from DB/History) */}
-        {strokes.map((stroke, index) => (
-          <Path
-            key={index}
-            d={stroke.path}
-            stroke={stroke.color}
-            strokeWidth={stroke.width}
-            fill="none"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        ))}
+        {strokes.map((stroke, index) => {
+          if (stroke.fill) {
+            return (
+              <Rect
+                key={index}
+                x={0}
+                y={0}
+                width="100%"
+                height="100%"
+                fill={stroke.color}
+              />
+            );
+          }
+
+          return (
+            <Path
+              key={index}
+              d={stroke.path}
+              stroke={stroke.color}
+              strokeWidth={stroke.width}
+              fill="none"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          );
+        })}
 
         {/* 2. Render Current "Live" Stroke */}
         {currentPoints.length > 0 && (
@@ -155,7 +171,7 @@ const styles = StyleSheet.create({
     backgroundColor: "white",
     borderRadius: 8,
     overflow: "hidden",
-    borderColor: "#e2e8f0",
+    borderColor: "#1d1d1d",
     borderWidth: 1,
   },
 });

@@ -98,14 +98,16 @@ export default function WaitingLobby({
             </TouchableOpacity>
           </View>
 
-          {hostId === me?.uid && (
-            <TouchableOpacity
-              style={styles.startBtn}
-              onPress={() => onStart && onStart()}
-            >
-              <Text style={styles.startText}>Start Game</Text>
-            </TouchableOpacity>
-          )}
+          <View style={styles.start}>
+            {hostId === me?.uid && (
+              <TouchableOpacity
+                style={styles.startBtn}
+                onPress={() => onStart && onStart()}
+              >
+                <Text style={styles.startText}>Start Game</Text>
+              </TouchableOpacity>
+            )}
+          </View>
 
           <InviteFriendsModal
             visible={showInvite}
@@ -121,13 +123,13 @@ export default function WaitingLobby({
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.4)",
+    backgroundColor: "rgba(0, 0, 0, 0.58)",
     justifyContent: "center",
     alignItems: "center",
   },
   card: {
     width: "92%",
-    backgroundColor: "white",
+    backgroundColor: "#e3e49e",
     borderRadius: 12,
     padding: 14,
   },
@@ -144,28 +146,42 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: "#f0f0f0",
+    borderBottomColor: "#1d1d1d",
   },
   name: { fontSize: 16 },
   points: { color: "#666" },
   empty: { textAlign: "center", color: "#666", padding: 20 },
   actions: {
     flexDirection: "row",
-    justifyContent: "space-between",
+    justifyContent: "center",
+    gap: 12,
     marginTop: 12,
   },
-  copyBtn: { padding: 10, backgroundColor: "#f3f4f6", borderRadius: 8 },
+  copyBtn: {
+    padding: 10,
+    backgroundColor: "#f3f4f6",
+    borderRadius: 8,
+    width: "30%",
+    alignItems: "center",
+  },
   copyText: { color: "#333", fontWeight: "600" },
-  inviteBtn: { padding: 10, backgroundColor: "#eef2ff", borderRadius: 8 },
-  inviteText: { color: "#4338ca", fontWeight: "700" },
+  inviteBtn: { padding: 10, backgroundColor: "#4c685f", borderRadius: 8 },
+  inviteText: { color: "#38ca9c", fontWeight: "700" },
   leaveBtn: { padding: 10, backgroundColor: "#fee2e2", borderRadius: 8 },
-  leaveText: { color: "#b91c1c", fontWeight: "700" },
+  leaveText: {
+    color: "#b91c1c",
+    fontWeight: "700",
+    textAlign: "center",
+    width: 60,
+  },
+  start: { alignItems: "center", marginTop: 10 },
   startBtn: {
     marginTop: 12,
     padding: 12,
-    backgroundColor: "#4338ca",
+    backgroundColor: "#b2b2b2",
     borderRadius: 8,
     alignItems: "center",
+    width: "50%",
   },
-  startText: { color: "white", fontWeight: "800" },
+  startText: { color: "#333", fontWeight: "800" },
 });

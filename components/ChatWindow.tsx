@@ -59,7 +59,7 @@ const getLevenshteinDistance = (a: string, b: string) => {
       } else {
         matrix[i][j] = Math.min(
           matrix[i - 1][j - 1] + 1,
-          Math.min(matrix[i][j - 1] + 1, matrix[i - 1][j] + 1)
+          Math.min(matrix[i][j - 1] + 1, matrix[i - 1][j] + 1),
         );
       }
     }
@@ -93,7 +93,7 @@ export default function ChatWindow({
       setMessages(msgs);
       setTimeout(
         () => flatListRef.current?.scrollToEnd({ animated: true }),
-        100
+        100,
       );
     });
 
@@ -109,7 +109,7 @@ export default function ChatWindow({
 
     const dist = getLevenshteinDistance(
       text.toLowerCase(),
-      currentWord.toLowerCase()
+      currentWord.toLowerCase(),
     );
     const isClose =
       dist > 0 &&
@@ -310,7 +310,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     padding: 10,
     borderTopWidth: 1,
-    borderTopColor: "#eee",
+    borderTopColor: "#101010",
     alignItems: "center",
   },
   input: {
@@ -321,14 +321,19 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     marginRight: 10,
     fontSize: 16,
+    color: "#111827",
+    borderWidth: 1,
+    borderColor: "#101010",
   },
   sendButton: {
     paddingVertical: 8,
     paddingHorizontal: 12,
+    backgroundColor: "#1d1d1d",
+    borderRadius: 20,
   },
   sendText: {
-    color: "#3b82f6",
-    fontWeight: "600",
+    color: "white",
+    fontWeight: "800",
     fontSize: 16,
   },
 });

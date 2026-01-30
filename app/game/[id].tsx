@@ -21,6 +21,7 @@ import {
   Easing,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
@@ -93,6 +94,8 @@ export default function GameRoom() {
   // Word selection and timer
   const [candidateWords, setCandidateWords] = useState<string[]>([]);
   const [remainingSeconds, setRemainingSeconds] = useState<number | null>(null);
+  const [customWord, setCustomWord] = useState("");
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     if (!id) return;
@@ -142,22 +145,40 @@ export default function GameRoom() {
       try {
         // Try Random Word API (vercel). Returns lowercase single words.
         const resp = await fetch(
-          "https://random-word-api.vercel.app/api?words=60"
+          "https://random-word-api.vercel.app/api?words=60",
         );
         if (!resp.ok) throw new Error("remote word fetch failed");
         const words: string[] = (await resp.json()).map((w: string) =>
-          w.toUpperCase()
+          w.toUpperCase(),
         );
         const filtered = words.filter(filterWord);
         if (filtered.length >= 3) return filtered;
 
         // fallback: try Datamuse for more varied words (may include multi-word phrases)
+        const topics = [
+          "animals",
+          "food",
+          "nature",
+          "sports",
+          "transport",
+          "home",
+          "clothing",
+          "music",
+          "tools",
+        ];
+        const topic = topics[Math.floor(Math.random() * topics.length)];
         const dm = await fetch(
-          "https://api.datamuse.com/words?ml=object&max=100"
+          `https://api.datamuse.com/words?topics=${topic}&max=100&md=p`,
         );
         if (dm.ok) {
           const dmJson = await dm.json();
           const candidates = dmJson
+            .filter((x: any) => {
+              const w = (x.word || "").toLowerCase();
+              return (
+                x.tags?.includes("n") && !w.endsWith("ing") && !w.endsWith("ed")
+              );
+            })
             .map((x: any) => (x.word || "").toString().toUpperCase())
             .filter(filterWord);
           if (candidates.length >= 3) return candidates;
@@ -179,7 +200,7 @@ export default function GameRoom() {
 
         // Fallback to local WORDS_POOL, prefer less-childish by filtering length
         const localFiltered = WORDS_POOL.filter(filterWord).map((w) =>
-          w.toUpperCase()
+          w.toUpperCase(),
         );
         if (localFiltered.length >= 3) {
           setCandidateWords(pickRandom(localFiltered, 3));
@@ -190,8 +211,9 @@ export default function GameRoom() {
       })();
     } else {
       setCandidateWords([]);
+      setCustomWord("");
     }
-  }, [gameData?.currentDrawer, userId, gameData]);
+  }, [gameData?.currentDrawer, gameData?.word, userId, refreshKey]);
 
   // Countdown based on gameData.roundEndTimestamp
   useEffect(() => {
@@ -233,7 +255,7 @@ export default function GameRoom() {
 
           const playersRaw = Array.isArray(data.players) ? data.players : [];
           const players: string[] = playersRaw.map((p: any) =>
-            typeof p === "string" ? p : p?.uid || p
+            typeof p === "string" ? p : p?.uid || p,
           );
           const currentDrawer: string = data.currentDrawer;
 
@@ -285,7 +307,7 @@ export default function GameRoom() {
         const snap = await getDoc(gameRef);
         const players = snap.exists() ? (snap.data() as any).players || [] : [];
         const already = players.some((p: any) =>
-          typeof p === "string" ? p === userId : p?.uid === userId
+          typeof p === "string" ? p === userId : p?.uid === userId,
         );
         if (!already) {
           try {
@@ -351,14 +373,14 @@ export default function GameRoom() {
                   data?.displayName ||
                   (p === userId ? auth.currentUser?.displayName : undefined) ||
                   p,
-                points: gameData.scores ? gameData.scores[p] ?? 0 : 0,
+                points: gameData.scores ? (gameData.scores[p] ?? 0) : 0,
                 avatar: data?.avatarUrl || data?.photoURL || null,
               };
             } catch (e) {
               return {
                 uid: p,
                 displayName: p,
-                points: gameData.scores ? gameData.scores[p] ?? 0 : 0,
+                points: gameData.scores ? (gameData.scores[p] ?? 0) : 0,
               };
             }
           } else {
@@ -366,8 +388,8 @@ export default function GameRoom() {
               uid: p.uid,
               displayName: p.displayName || p.username || p.uid,
               points: gameData.scores
-                ? gameData.scores[p.uid] ?? 0
-                : p.points ?? 0,
+                ? (gameData.scores[p.uid] ?? 0)
+                : (p.points ?? 0),
             };
           }
         });
@@ -448,7 +470,7 @@ export default function GameRoom() {
     if ((gameData.players?.length || 0) < 2) {
       Alert.alert(
         "Need more players",
-        "At least 2 players are required to start the game."
+        "At least 2 players are required to start the game.",
       );
       return;
     }
@@ -485,7 +507,7 @@ export default function GameRoom() {
 
         const playersRaw = Array.isArray(data.players) ? data.players : [];
         const players: string[] = playersRaw.map((p: any) =>
-          typeof p === "string" ? p : p?.uid || p
+          typeof p === "string" ? p : p?.uid || p,
         );
         const currentDrawer: string = data.currentDrawer;
 
@@ -506,7 +528,7 @@ export default function GameRoom() {
         const nonDrawerPlayers = players.filter((p) => p !== currentDrawer);
 
         const allGuessed = nonDrawerPlayers.every((p) =>
-          guessedArr.includes(p)
+          guessedArr.includes(p),
         );
 
         if (!allGuessed) return; // wait for all to guess
@@ -515,7 +537,7 @@ export default function GameRoom() {
         const endTs = data.roundEndTimestamp || Date.now();
         const remainingSeconds = Math.max(
           0,
-          Math.ceil((endTs - Date.now()) / 1000)
+          Math.ceil((endTs - Date.now()) / 1000),
         );
 
         // Scoring formula:
@@ -535,7 +557,7 @@ export default function GameRoom() {
 
         // Award points to the drawer
         const numGuessers = nonDrawerPlayers.filter((u) =>
-          guessedArr.includes(u)
+          guessedArr.includes(u),
         ).length;
         if (currentDrawer) {
           scoresObj[currentDrawer] =
@@ -579,6 +601,27 @@ export default function GameRoom() {
       });
     } catch (e) {
       console.error("handleCorrectGuess transaction failed", e);
+    }
+  };
+
+  const handleCustomWordSubmit = async () => {
+    const w = customWord.trim().toUpperCase();
+    if (!w) return;
+    if (w.length < 2 || w.length > 20) {
+      Alert.alert("Invalid word", "Word must be 2-20 characters");
+      return;
+    }
+    try {
+      const gameRef = doc(db, "games", id as string);
+      const roundEnd = Date.now() + 120000;
+      await updateDoc(gameRef, {
+        word: w,
+        currentWord: w,
+        roundEndTimestamp: roundEnd,
+        guessed: [],
+      });
+    } catch (e) {
+      console.error("custom word select failed", e);
     }
   };
 
@@ -681,9 +724,18 @@ export default function GameRoom() {
             {gameData?.currentDrawer === userId &&
               !((gameData as any)?.word || (gameData as any).currentWord) && (
                 <View style={styles.wordPicker}>
-                  <Text style={styles.wordPickerTitle}>
-                    Choose a word to draw
-                  </Text>
+                  <View style={styles.wordPickerHeader}>
+                    <Text style={styles.wordPickerTitle}>
+                      Choose a word to draw
+                    </Text>
+                    <TouchableOpacity
+                      onPress={() => setRefreshKey((k) => k + 1)}
+                      style={styles.shuffleButton}
+                    >
+                      <Ionicons name="shuffle" size={18} color="#4B5563" />
+                      <Text style={styles.shuffleText}>Shuffle</Text>
+                    </TouchableOpacity>
+                  </View>
                   <View style={styles.wordOptions}>
                     {candidateWords.map((w) => (
                       <TouchableOpacity
@@ -707,6 +759,26 @@ export default function GameRoom() {
                         <Text style={styles.wordOptionText}>{w}</Text>
                       </TouchableOpacity>
                     ))}
+                  </View>
+                  <View style={styles.customWordSection}>
+                    <Text style={styles.orText}>OR</Text>
+                    <View style={styles.customInputRow}>
+                      <TextInput
+                        style={styles.customInput}
+                        placeholder="Type your own..."
+                        placeholderTextColor="#9CA3AF"
+                        value={customWord}
+                        onChangeText={setCustomWord}
+                        maxLength={20}
+                        autoCapitalize="characters"
+                      />
+                      <TouchableOpacity
+                        style={styles.customSubmitBtn}
+                        onPress={handleCustomWordSubmit}
+                      >
+                        <Ionicons name="checkmark" size={20} color="white" />
+                      </TouchableOpacity>
+                    </View>
                   </View>
                 </View>
               )}
@@ -1088,7 +1160,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "700",
     color: "#111827",
-    marginBottom: 12,
   },
   wordLength: {
     marginLeft: 2,
@@ -1111,5 +1182,55 @@ const styles = StyleSheet.create({
     color: "#111827",
     fontWeight: "600",
     fontSize: 14,
+  },
+  customWordSection: {
+    marginTop: 16,
+    alignItems: "center",
+    width: "100%",
+  },
+  orText: {
+    color: "#92400E",
+    fontSize: 12,
+    fontWeight: "bold",
+    marginBottom: 8,
+  },
+  customInputRow: {
+    flexDirection: "row",
+    gap: 8,
+    width: "90%",
+  },
+  customInput: {
+    flex: 1,
+    backgroundColor: "white",
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 14,
+    color: "#111827",
+  },
+  customSubmitBtn: {
+    backgroundColor: "#D97706",
+    padding: 10,
+    borderRadius: 8,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  wordPickerHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    width: "100%",
+    marginBottom: 12,
+  },
+  shuffleButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    padding: 4,
+  },
+  shuffleText: {
+    fontSize: 14,
+    color: "#4B5563",
+    fontWeight: "600",
   },
 });

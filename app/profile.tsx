@@ -1,8 +1,12 @@
+import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { signOut } from "firebase/auth";
-import React from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Alert,
+  Animated,
+  Dimensions,
+  Easing,
   ImageBackground,
   StyleSheet,
   Text,
@@ -12,9 +16,22 @@ import {
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { auth } from "../firebaseConfig";
 
+const { width } = Dimensions.get("window");
+
 export default function Profile() {
   const router = useRouter();
   const user = auth.currentUser;
+  const [showSettings, setShowSettings] = useState(false);
+  const slideAnim = useRef(new Animated.Value(width)).current;
+
+  useEffect(() => {
+    Animated.timing(slideAnim, {
+      toValue: showSettings ? 0 : width,
+      duration: 300,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [showSettings]);
 
   const handleSignOut = async () => {
     try {
@@ -32,6 +49,19 @@ export default function Profile() {
       resizeMode="cover"
     >
       <SafeAreaProvider style={styles.container}>
+        <View style={styles.header}>
+          <TouchableOpacity
+            style={styles.headerButton}
+            onPress={() => router.back()}
+          >
+            <Ionicons name="arrow-back" size={24} color="#333" />
+            <Text style={styles.headerButtonText}>Back</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => setShowSettings(true)}>
+            <Ionicons name="settings-sharp" size={28} color="#333" />
+          </TouchableOpacity>
+        </View>
+
         <View style={styles.card}>
           <View style={styles.avatar}>
             <Text style={styles.avatarText}>
@@ -53,21 +83,29 @@ export default function Profile() {
           >
             <Text style={styles.buttonText}>My Friends</Text>
           </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.button, styles.logoutButton]}
-            onPress={handleSignOut}
-          >
-            <Text style={[styles.buttonText, styles.logoutText]}>Log Out</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.backButton}
-            onPress={() => router.back()}
-          >
-            <Text style={styles.backText}>Back to Lobby</Text>
-          </TouchableOpacity>
         </View>
+
+        {/* Settings Menu Overlay */}
+        {showSettings && (
+          <TouchableOpacity
+            style={styles.backdrop}
+            activeOpacity={1}
+            onPress={() => setShowSettings(false)}
+          />
+        )}
+        <Animated.View
+          style={[
+            styles.settingsPanel,
+            { transform: [{ translateX: slideAnim }] },
+          ]}
+        >
+          <Text style={styles.settingsTitle}>Settings</Text>
+          <View style={styles.divider} />
+          <TouchableOpacity style={styles.menuItem} onPress={handleSignOut}>
+            <Ionicons name="log-out-outline" size={24} color="#d32f2f" />
+            <Text style={styles.menuItemText}>Log Out</Text>
+          </TouchableOpacity>
+        </Animated.View>
       </SafeAreaProvider>
     </ImageBackground>
   );
@@ -76,10 +114,26 @@ export default function Profile() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-
     backgroundColor: "#ffffff83",
   },
   backgroundImage: { flex: 1 },
+  header: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 20,
+    paddingTop: 50,
+  },
+  headerButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  headerButtonText: {
+    fontSize: 18,
+    fontWeight: "bold",
+    color: "#333",
+  },
   card: {
     backgroundColor: "transparent",
     borderRadius: 20,
@@ -125,8 +179,42 @@ const styles = StyleSheet.create({
     color: "#333",
     textTransform: "uppercase",
   },
-  logoutButton: { backgroundColor: "#ffebee" },
-  logoutText: { color: "#d32f2f" },
-  backButton: { marginTop: 10 },
-  backText: { color: "#333", fontWeight: "bold", fontSize: 16 },
+  backdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.3)",
+    zIndex: 10,
+  },
+  settingsPanel: {
+    position: "absolute",
+    right: 0,
+    top: 0,
+    bottom: 0,
+    width: 250,
+    backgroundColor: "#4d4d4d",
+    zIndex: 20,
+    padding: 20,
+    paddingTop: 60,
+    shadowColor: "#000",
+    shadowOffset: { width: -2, height: 0 },
+    shadowOpacity: 0.2,
+    shadowRadius: 5,
+    elevation: 5,
+  },
+  settingsTitle: {
+    fontSize: 24,
+    fontWeight: "bold",
+    color: "#f0f0f0",
+    marginBottom: 10,
+  },
+  menuItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 15,
+  },
+  menuItemText: {
+    fontSize: 18,
+    color: "#d32f2f",
+    fontWeight: "600",
+  },
 });
