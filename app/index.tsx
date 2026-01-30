@@ -27,6 +27,19 @@ import { auth, db } from "../firebaseConfig";
 // Generate numbers 1-20 for the wheel
 const ROUND_OPTIONS = Array.from({ length: 20 }, (_, i) => i + 1);
 
+const WELCOME_PHRASES = [
+  "Welcome, {name}!",
+  "Ready to draw, {name}?",
+  "Let's get creative, {name}!",
+  "Time to guess, {name}!",
+  "Show us your skills, {name}!",
+  "Hey {name}, let's play!",
+  "Good to see you, {name}!",
+  "Get ready to scribble, {name}!",
+  "Draw. Guess. Win. Right, {name}?",
+  "Your turn to shine, {name}!",
+];
+
 export default function Index() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
@@ -34,6 +47,7 @@ export default function Index() {
   const [roomCode, setRoomCode] = useState("");
   const [username, setUsername] = useState("Loading...");
   const [showRoundModal, setShowRoundModal] = useState(false);
+  const [greetingTemplate, setGreetingTemplate] = useState(WELCOME_PHRASES[0]);
 
   // Round Selection State
   const [selectedRounds, setSelectedRounds] = useState(2);
@@ -41,6 +55,12 @@ export default function Index() {
   const [useCustomInput, setUseCustomInput] = useState(false);
   const [hasSeenOnboarding, setHasSeenOnboarding] = useState(false);
   const [gameInvite, setGameInvite] = useState<any>(null);
+
+  useEffect(() => {
+    setGreetingTemplate(
+      WELCOME_PHRASES[Math.floor(Math.random() * WELCOME_PHRASES.length)],
+    );
+  }, []);
 
   // 1. Listen for Auth State
   useEffect(() => {
@@ -129,7 +149,7 @@ export default function Index() {
       if (isNaN(parsed) || parsed < 1 || parsed > 20) {
         Alert.alert(
           "Invalid Rounds",
-          "Please enter a number between 1 and 20."
+          "Please enter a number between 1 and 20.",
         );
         return;
       }
@@ -188,7 +208,9 @@ export default function Index() {
       >
         <SafeAreaProvider style={styles.container}>
           <View style={styles.header}>
-            <Text style={styles.welcomeText}>Welcome, {username} !</Text>
+            <Text style={styles.welcomeText}>
+              {greetingTemplate.replace("{name}", username)}
+            </Text>
             <TouchableOpacity onPress={() => router.push("/profile")}>
               <View style={styles.profileIcon}>
                 <Text style={styles.profileIconText}>

@@ -41,7 +41,8 @@ const { width } = Dimensions.get("window");
 
 // --- Configuration ---
 // REPLACE with your actual version JSON URL
-const UPDATE_JSON_URL = "https://your-website.com/version.json";
+const UPDATE_JSON_URL =
+  "https://gist.githubusercontent.com/atakhatri/14928794d017d4b66a845d2afb58f487/raw/7ba74eacfd7945dc48bb703ef19e0da26d4590d3/version.json";
 
 export default function Profile() {
   const router = useRouter();
