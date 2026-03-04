@@ -3,7 +3,16 @@ import Constants from "expo-constants";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import { getAuth, signOut, updateProfile } from "firebase/auth";
-import { doc, getFirestore, onSnapshot, updateDoc } from "firebase/firestore";
+import {
+  collection,
+  doc,
+  getDocs,
+  getFirestore,
+  onSnapshot,
+  query,
+  updateDoc,
+  where,
+} from "firebase/firestore";
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -55,6 +64,7 @@ export default function ProfileScreen() {
   const [stats, setStats] = useState({ wins: 0, totalGames: 0, score: 0 });
   const [activeTab, setActiveTab] = useState<"profile" | "settings">("profile");
   const [selectedGradientIndex, setSelectedGradientIndex] = useState(-1);
+  const [nameError, setNameError] = useState("");
 
   const currentAppVersion = Constants.expoConfig?.version || "1.0.0";
 
@@ -127,11 +137,28 @@ export default function ProfileScreen() {
   };
 
   const handleUpdateProfile = async () => {
+    setNameError("");
     if (!user || !displayName.trim()) return;
     setUpdating(true);
     try {
-      await updateProfile(user, { displayName });
-      await updateDoc(doc(db, "users", user.uid), { displayName });
+      const newName = displayName.trim();
+
+      // Check for uniqueness
+      const usersRef = collection(db, "users");
+      const q = query(usersRef, where("displayName", "==", newName));
+      const querySnapshot = await getDocs(q);
+
+      if (
+        !querySnapshot.empty &&
+        querySnapshot.docs.some((d) => d.id !== user.uid)
+      ) {
+        setNameError("This username is already taken.");
+        setUpdating(false);
+        return;
+      }
+
+      await updateProfile(user, { displayName: newName });
+      await updateDoc(doc(db, "users", user.uid), { displayName: newName });
       Alert.alert("Success", "Profile updated successfully!");
     } catch (error) {
       Alert.alert("Error", "Failed to update profile.");
@@ -333,7 +360,10 @@ export default function ProfileScreen() {
                 <TextInput
                   style={styles.input}
                   value={displayName}
-                  onChangeText={setDisplayName}
+                  onChangeText={(text) => {
+                    setDisplayName(text);
+                    setNameError("");
+                  }}
                   placeholder="Enter name"
                   placeholderTextColor="#999"
                 />
@@ -349,6 +379,9 @@ export default function ProfileScreen() {
                   )}
                 </TouchableOpacity>
               </View>
+              {nameError ? (
+                <Text style={styles.errorText}>{nameError}</Text>
+              ) : null}
 
               <View style={styles.divider} />
 
@@ -552,6 +585,13 @@ const styles = StyleSheet.create({
     height: 50,
     justifyContent: "center",
     elevation: 10,
+  },
+  errorText: {
+    color: "#FF6B6B",
+    fontSize: 14,
+    marginTop: -15,
+    marginBottom: 15,
+    fontWeight: "bold",
   },
   saveButtonText: { color: "#333", fontWeight: "800", fontSize: 16 },
   divider: {

@@ -8,6 +8,7 @@ import {
   collection,
   doc,
   getDoc,
+  increment,
   onSnapshot,
   runTransaction,
   serverTimestamp,
@@ -53,12 +54,14 @@ interface GameData {
   scores?: Record<string, number>;
   winner?: string;
   guesses?: any[]; // Added guesses to interface
+  guessed?: string[];
   roundEndTimestamp?: number;
 }
 
 export default function GameRoom() {
   const { id } = useLocalSearchParams();
   const router = useRouter();
+  const userId = auth.currentUser?.uid;
   const [gameData, setGameData] = useState<GameData | null>(null);
   const [loading, setLoading] = useState(true);
   const [currentColor, setCurrentColor] = useState("#000000");
@@ -74,6 +77,10 @@ export default function GameRoom() {
   const [isKeyboardVisible, setKeyboardVisible] = useState(false);
   const [showDrawingTools, setShowDrawingTools] = useState(false);
   const [isDrawing, setIsDrawing] = useState(false);
+
+  // Stats update state
+  const [hasUpdatedStats, setHasUpdatedStats] = useState(false);
+  const [lastStatus, setLastStatus] = useState<GameData["status"] | null>(null);
 
   // Round animation state
   const [lastSeenRound, setLastSeenRound] = useState<number>(0);
@@ -112,6 +119,45 @@ export default function GameRoom() {
     if (gameData?.status === "waiting") setShowLobbyVisible(true);
     else setShowLobbyVisible(false);
   }, [gameData?.status]);
+
+  // Update user stats when game finishes
+  useEffect(() => {
+    const currentStatus = gameData?.status;
+    if (!currentStatus || !userId) return;
+
+    // Only update stats if we transitioned from 'playing' to 'finished'
+    // This prevents updates on re-renders or if joining an already finished game
+    if (
+      lastStatus === "playing" &&
+      currentStatus === "finished" &&
+      !hasUpdatedStats
+    ) {
+      setHasUpdatedStats(true);
+      const updateStats = async () => {
+        try {
+          const scores = gameData?.scores || {};
+          const myScore = scores[userId] || 0;
+          const allScores = Object.values(scores);
+          const maxScore = allScores.length > 0 ? Math.max(...allScores) : 0;
+          const isWinner = myScore > 0 && myScore === maxScore;
+
+          const userRef = doc(db, "users", userId);
+          await updateDoc(userRef, {
+            totalGames: increment(1),
+            totalScore: increment(myScore),
+            wins: isWinner ? increment(1) : increment(0),
+          });
+        } catch (e) {
+          console.error("Failed to update stats", e);
+        }
+      };
+      updateStats();
+    }
+
+    if (currentStatus !== lastStatus) {
+      setLastStatus(currentStatus);
+    }
+  }, [gameData?.status, userId, lastStatus, hasUpdatedStats]);
 
   // Round change animation
   useEffect(() => {
@@ -169,8 +215,6 @@ export default function GameRoom() {
     // so the drawer has to open them.
     setShowDrawingTools(false);
   }, [gameData?.word]);
-
-  const userId = auth.currentUser?.uid;
 
   // Word selection and timer
   const [candidateWords, setCandidateWords] = useState<string[]>([]);
@@ -271,7 +315,7 @@ export default function GameRoom() {
       return null;
     };
 
-    if (isDrawer && !currentWord) {
+    if (isDrawer && !currentWord && gameData?.status === "playing") {
       (async () => {
         const remote = await fetchRemoteWords();
         if (remote && remote.length > 0) {
@@ -1035,6 +1079,14 @@ export default function GameRoom() {
                     {gameData?.currentDrawer === p.uid && (
                       <Text style={styles.drawerTag}>Drawing</Text>
                     )}
+                    {gameData?.guessed?.includes(p.uid) && (
+                      <Ionicons
+                        name="checkmark-circle"
+                        size={20}
+                        color="#22C55E"
+                        style={{ marginLeft: 4 }}
+                      />
+                    )}
                   </View>
                 </View>
               ))}
@@ -1170,6 +1222,7 @@ const styles = StyleSheet.create({
   toolsWrapper: {
     flexDirection: "column-reverse",
     alignItems: "center",
+    marginBottom: 16,
   },
   closeToolsButton: {
     backgroundColor: "rgba(0,0,0,0.6)",

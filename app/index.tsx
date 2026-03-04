@@ -18,20 +18,25 @@ import {
   updateDoc,
   where,
 } from "firebase/firestore";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
-  ActivityIndicator,
   Alert,
+  Animated,
+  Easing,
   ImageBackground,
+  LayoutAnimation,
   Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
+  UIManager,
   View,
 } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
+import Preloader from "../components/preloader";
 import WELCOME_TEXT from "../data/welcomePhrases";
 import { auth, db } from "../firebaseConfig";
 // Generate numbers 1-20 for the wheel
@@ -53,11 +58,19 @@ const getAvatarGradient = (uid: string): [string, string, ...string[]] => {
   ];
 };
 
+if (
+  Platform.OS === "android" &&
+  UIManager.setLayoutAnimationEnabledExperimental
+) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
+
 export default function Index() {
   const router = useRouter();
   const pathname = usePathname();
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [splashAnimationFinished, setSplashAnimationFinished] = useState(false);
   const [roomCode, setRoomCode] = useState("");
   const [username, setUsername] = useState("Loading...");
   const [showRoundModal, setShowRoundModal] = useState(false);
@@ -75,11 +88,64 @@ export default function Index() {
   const [activeGamePlayers, setActiveGamePlayers] = useState<any[]>([]);
   const [avatarGradientIndex, setAvatarGradientIndex] = useState<number>(-1);
 
+  // Animation State
+  const [showJoin, setShowJoin] = useState(true);
+  const [showLobby, setShowLobby] = useState(false);
+  const joinOpacity = useRef(new Animated.Value(1)).current;
+  const lobbyOpacity = useRef(new Animated.Value(0)).current;
+
   useEffect(() => {
     setGreetingTemplate(
       WELCOME_PHRASES[Math.floor(Math.random() * WELCOME_PHRASES.length)],
     );
+
+    // Ensure preloader runs for at least one full animation cycle (4000ms)
+    const timer = setTimeout(() => {
+      setSplashAnimationFinished(true);
+    }, 4000);
+    return () => clearTimeout(timer);
   }, []);
+
+  // Handle Fade Transitions between Join and Lobby
+  useEffect(() => {
+    if (activeGameId) {
+      // Transition to Lobby: Fade out Join -> Fade in Lobby
+      Animated.timing(joinOpacity, {
+        toValue: 0,
+        duration: 300,
+        useNativeDriver: true,
+        easing: Easing.out(Easing.cubic),
+      }).start(() => {
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        setShowJoin(false);
+        setShowLobby(true);
+        Animated.timing(lobbyOpacity, {
+          toValue: 1,
+          duration: 300,
+          useNativeDriver: true,
+          easing: Easing.out(Easing.cubic),
+        }).start();
+      });
+    } else {
+      // Transition to Join: Fade out Lobby -> Fade in Join
+      Animated.timing(lobbyOpacity, {
+        toValue: 0,
+        duration: 300,
+        useNativeDriver: true,
+        easing: Easing.out(Easing.cubic),
+      }).start(() => {
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        setShowLobby(false);
+        setShowJoin(true);
+        Animated.timing(joinOpacity, {
+          toValue: 1,
+          duration: 300,
+          useNativeDriver: true,
+          easing: Easing.out(Easing.cubic),
+        }).start();
+      });
+    }
+  }, [activeGameId]);
 
   // 1. Listen for Auth State
   useEffect(() => {
@@ -172,6 +238,9 @@ export default function Index() {
             const pData = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
             setActiveGamePlayers(pData);
           }
+
+          // Sync rounds from game to local state
+          if (data.maxRounds) setSelectedRounds(data.maxRounds);
         }
       },
     );
@@ -228,7 +297,7 @@ export default function Index() {
           currentDrawer: user!.uid,
           currentWord: "",
           round: 1,
-          maxRounds: 3,
+          maxRounds: selectedRounds,
           scores: { [user!.uid]: 0 },
           players: [user!.uid],
           hostId: user!.uid,
@@ -272,6 +341,18 @@ export default function Index() {
     ]);
   };
 
+  const updateLobbyRounds = async (delta: number) => {
+    if (!activeGameId) return;
+    const newRounds = Math.max(1, Math.min(20, selectedRounds + delta));
+    try {
+      await updateDoc(doc(db, "games", activeGameId), {
+        maxRounds: newRounds,
+      });
+    } catch (e) {
+      console.error("Failed to update rounds", e);
+    }
+  };
+
   // 2. Navigation Functions
   const handleCreateRoom = async () => {
     let roundsToPlay = selectedRounds;
@@ -304,10 +385,6 @@ export default function Index() {
         hostId: user.uid,
         guesses: [],
       });
-
-      setShowRoundModal(false);
-      setCustomRounds("");
-      setUseCustomInput(false);
       router.push(`/game/${randomCode}`);
     } catch (error) {
       Alert.alert("Error", "Failed to create game room");
@@ -322,12 +399,8 @@ export default function Index() {
     router.push(`/game/${roomCode.toUpperCase()}`);
   };
 
-  if (loading) {
-    return (
-      <View style={styles.centerContainer}>
-        <ActivityIndicator size="large" color="#4a90e2" />
-      </View>
-    );
+  if (loading || !splashAnimationFinished) {
+    return <Preloader />;
   }
 
   // ---------------- RENDER: LOGGED IN LOBBY ----------------
@@ -369,40 +442,90 @@ export default function Index() {
             contentContainerStyle={styles.scrollContent}
             showsVerticalScrollIndicator={false}
           >
-            <Text style={styles.title}>Scribbles</Text>
+            {/* <Text style={styles.title}>Scribbles</Text> */}
 
-            <View style={styles.card}>
-              <Text style={styles.label}>Join a Game</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="Enter Room Code"
-                placeholderTextColor={"#333"}
-                value={roomCode}
-                onChangeText={setRoomCode}
-                autoCapitalize="characters"
-                maxLength={6}
-              />
-              <TouchableOpacity style={styles.buttonPrimary} onPress={joinRoom}>
-                <Text style={styles.buttonText}>Join Room</Text>
-              </TouchableOpacity>
-              <View style={styles.divider}>
-                <Text style={styles.dividerText}>OR</Text>
-              </View>
-              <TouchableOpacity
-                style={styles.buttonSecondary}
-                onPress={() => setShowRoundModal(true)}
-              >
-                <Text style={styles.buttonTextSecondary}>Create New Room</Text>
-              </TouchableOpacity>
-            </View>
+            {showJoin && (
+              <Animated.View style={[styles.card, { opacity: joinOpacity }]}>
+                <View style={styles.joinGroupPanel}>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Enter Room Code"
+                    placeholderTextColor={"#333"}
+                    value={roomCode}
+                    onChangeText={setRoomCode}
+                    autoCapitalize="characters"
+                    maxLength={6}
+                  />
+                  <TouchableOpacity
+                    style={styles.buttonPrimary}
+                    onPress={joinRoom}
+                  >
+                    <Text style={styles.buttonText}>Join Room</Text>
+                  </TouchableOpacity>
+                </View>
+                <View style={styles.divider}>
+                  <Text style={styles.dividerText}>OR</Text>
+                </View>
+                <View style={styles.createGroupPanel}>
+                  <View style={styles.roundsSelector}>
+                    <Text style={styles.roundsLabel}>Rounds</Text>
+                    <View style={styles.stepper}>
+                      <TouchableOpacity
+                        onPress={() =>
+                          setSelectedRounds((prev) => Math.max(1, prev - 1))
+                        }
+                      >
+                        <Ionicons name="remove-circle" size={24} color="#333" />
+                      </TouchableOpacity>
+                      <Text style={styles.roundsText}>{selectedRounds}</Text>
+                      <TouchableOpacity
+                        onPress={() =>
+                          setSelectedRounds((prev) => Math.min(20, prev + 1))
+                        }
+                      >
+                        <Ionicons name="add-circle" size={24} color="#333" />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.buttonSecondary}
+                    onPress={handleCreateRoom}
+                  >
+                    <Text style={styles.buttonTextSecondary}>Create Room</Text>
+                  </TouchableOpacity>
+                </View>
+              </Animated.View>
+            )}
 
             {/* Waiting Group Panel */}
-            {activeGameId && (
-              <View style={styles.waitingGroupPanel}>
-                <Text style={styles.waitingTitle}>Lobby: {activeGameId}</Text>
-                <Text style={styles.waitingSubtitle}>
-                  Waiting for players...
-                </Text>
+            {showLobby && (
+              <Animated.View
+                style={[styles.waitingGroupPanel, { opacity: lobbyOpacity }]}
+              >
+                <View style={styles.waitingUpperRow}>
+                  <View style={styles.waitingHeader}>
+                    <Text style={styles.waitingTitle}>
+                      Lobby: {activeGameId}
+                    </Text>
+                    <Text style={styles.waitingSubtitle}>
+                      Waiting for players...
+                    </Text>
+                  </View>
+
+                  <View style={[styles.roundsSelector, { marginBottom: 15 }]}>
+                    <Text style={styles.roundsLabel}>Rounds</Text>
+                    <View style={styles.stepper}>
+                      <TouchableOpacity onPress={() => updateLobbyRounds(-1)}>
+                        <Ionicons name="remove-circle" size={24} color="#333" />
+                      </TouchableOpacity>
+                      <Text style={styles.roundsText}>{selectedRounds}</Text>
+                      <TouchableOpacity onPress={() => updateLobbyRounds(1)}>
+                        <Ionicons name="add-circle" size={24} color="#333" />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </View>
+
                 <View style={styles.waitingAvatars}>
                   {activeGamePlayers.map((p) => (
                     <View key={p.id} style={styles.waitingAvatarContainer}>
@@ -429,6 +552,17 @@ export default function Index() {
                       </Text>
                     </View>
                   ))}
+                  <TouchableOpacity
+                    style={styles.inviteMoreBtn}
+                    onPress={() =>
+                      router.push({
+                        pathname: "/friends",
+                        params: { inviteToRoomId: activeGameId },
+                      })
+                    }
+                  >
+                    <Ionicons name="add" size={30} color="#666" />
+                  </TouchableOpacity>
                 </View>
                 <View style={styles.waitingBtnRow}>
                   <TouchableOpacity
@@ -444,7 +578,7 @@ export default function Index() {
                     <Text style={styles.enterGameText}>Enter Game</Text>
                   </TouchableOpacity>
                 </View>
-              </View>
+              </Animated.View>
             )}
 
             {/* Friends Panel */}
@@ -496,89 +630,6 @@ export default function Index() {
               )}
             </View>
           </ScrollView>
-
-          {/* Round Selection Modal */}
-          <Modal
-            visible={showRoundModal}
-            transparent
-            animationType="slide"
-            onRequestClose={() => setShowRoundModal(false)}
-          >
-            <View style={styles.modalOverlay}>
-              <View style={styles.modalContent}>
-                <Text style={styles.modalTitle}>Game Settings</Text>
-                <Text style={styles.modalSubtitle}>Number of Rounds</Text>
-
-                {!useCustomInput ? (
-                  <View style={styles.pickerContainer}>
-                    <View style={styles.pickerWindow} pointerEvents="none" />
-                    <ScrollView
-                      style={styles.scroller}
-                      contentContainerStyle={styles.scrollerContent}
-                      showsVerticalScrollIndicator={false}
-                      snapToInterval={50}
-                      decelerationRate="fast"
-                      onMomentumScrollEnd={(e) => {
-                        const offsetY = e.nativeEvent.contentOffset.y;
-                        const index = Math.round(offsetY / 50);
-                        if (ROUND_OPTIONS[index])
-                          setSelectedRounds(ROUND_OPTIONS[index]);
-                      }}
-                    >
-                      <View style={{ height: 75 }} />
-                      {ROUND_OPTIONS.map((r) => (
-                        <View key={r} style={styles.scrollItem}>
-                          <Text
-                            style={[
-                              styles.scrollItemText,
-                              selectedRounds === r && styles.selectedItemText,
-                            ]}
-                          >
-                            {r}
-                          </Text>
-                        </View>
-                      ))}
-                      <View style={{ height: 75 }} />
-                    </ScrollView>
-                  </View>
-                ) : (
-                  <TextInput
-                    style={styles.customInput}
-                    placeholder="Type rounds (1-50)"
-                    placeholderTextColor={"#333"}
-                    keyboardType="number-pad"
-                    value={customRounds}
-                    onChangeText={setCustomRounds}
-                    autoFocus
-                  />
-                )}
-
-                <TouchableOpacity
-                  onPress={() => setUseCustomInput(!useCustomInput)}
-                  style={styles.toggleInputBtn}
-                >
-                  <Text style={styles.toggleInputText}>
-                    {useCustomInput ? "Switch to List" : "Type Manually"}
-                  </Text>
-                </TouchableOpacity>
-
-                <View style={styles.modalButtons}>
-                  <TouchableOpacity
-                    onPress={() => setShowRoundModal(false)}
-                    style={styles.cancelBtn}
-                  >
-                    <Text style={styles.cancelText}>Cancel</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    onPress={handleCreateRoom}
-                    style={styles.confirmBtn}
-                  >
-                    <Text style={styles.confirmText}>Start Game</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            </View>
-          </Modal>
 
           {/* Game Invite Modal */}
           <Modal
@@ -648,7 +699,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "transparent" },
   containerTransparent: {
     flex: 1,
-    backgroundColor: "rgba(255, 247, 225, 0.5)",
+    backgroundColor: "transparent",
   },
   backgroundImage: { flex: 1 },
   centerContainer: { flex: 1, justifyContent: "center", alignItems: "center" },
@@ -691,39 +742,46 @@ const styles = StyleSheet.create({
   card: {
     backgroundColor: "#dddddd95",
     borderRadius: 20,
-    padding: 30,
-    elevation: 8,
+    padding: 10,
     marginBottom: 20,
   },
   label: { fontSize: 18, fontWeight: "900", marginBottom: 10, color: "black" },
   input: {
     backgroundColor: "#fff9f2ff",
-
-    padding: 15,
-    borderRadius: 10,
-    fontSize: 18,
-    marginBottom: 15,
+    padding: 12,
+    borderRadius: 12,
+    fontSize: 16,
+    marginBottom: 0,
     borderWidth: 2,
     borderColor: "#333",
     color: "#333",
+    flex: 1,
+  },
+  joinGroupPanel: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
   },
   buttonPrimary: {
     backgroundColor: "#333",
-    padding: 15,
-    borderRadius: 10,
-    alignItems: "center",
-  },
-  buttonText: { color: "white", fontWeight: "bold", fontSize: 20 },
-  buttonSecondary: {
-    backgroundColor: "#33333370",
     padding: 12,
-    borderRadius: 10,
+    borderRadius: 12,
     alignItems: "center",
     borderWidth: 2,
     borderColor: "#333",
   },
-  buttonTextSecondary: { color: "white", fontWeight: "bold", fontSize: 20 },
-  divider: { alignItems: "center", marginVertical: 20 },
+  buttonText: { color: "white", fontWeight: "bold", fontSize: 16 },
+  buttonSecondary: {
+    backgroundColor: "#33333370",
+    padding: 12,
+    borderRadius: 12,
+    alignItems: "center",
+    borderWidth: 2,
+    borderColor: "#333",
+    flex: 1,
+  },
+  buttonTextSecondary: { color: "white", fontWeight: "bold", fontSize: 16 },
+  divider: { alignItems: "center", marginVertical: 10 },
   dividerText: { color: "#333", fontSize: 18, fontWeight: "bold" },
 
   // Modal Styles
@@ -821,20 +879,57 @@ const styles = StyleSheet.create({
   },
   confirmText: { color: "white", fontWeight: "bold" },
 
+  createGroupPanel: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  roundsSelector: {
+    backgroundColor: "#fff9f2ff",
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: "#333",
+    padding: 5,
+    alignItems: "center",
+    justifyContent: "center",
+    minWidth: 100,
+  },
+  roundsLabel: {
+    fontSize: 10,
+    fontWeight: "bold",
+    color: "#555",
+    textTransform: "uppercase",
+  },
+  stepper: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  roundsText: {
+    fontSize: 18,
+    fontWeight: "bold",
+    color: "#333",
+  },
+
   // Friends Panel
   friendsPanel: {
     backgroundColor: "#dddddd95",
     borderRadius: 20,
-    padding: 20,
-    elevation: 8,
+    padding: 10,
   },
   friendsHeader: {
     flexDirection: "row",
-    justifyContent: "space-between",
+    justifyContent: "center",
     alignItems: "center",
     marginBottom: 15,
   },
-  friendsTitle: { fontSize: 18, fontWeight: "bold", color: "#ffffff" },
+  friendsTitle: {
+    fontSize: 18,
+    fontWeight: "bold",
+    color: "#ffffff",
+    textShadowColor: "rgba(0, 0, 0, 0.75)",
+    textShadowOffset: { width: -1, height: 1 },
+    textShadowRadius: 10,
+  },
   friendsListVertical: { gap: 10 },
   friendRow: {
     flexDirection: "row",
@@ -872,19 +967,28 @@ const styles = StyleSheet.create({
 
   // Waiting Group Panel
   waitingGroupPanel: {
-    backgroundColor: "#fff",
+    backgroundColor: "#dddddd95",
     borderRadius: 20,
     padding: 20,
     marginBottom: 20,
-    elevation: 8,
+    alignItems: "center",
   },
-  waitingTitle: { fontSize: 18, fontWeight: "bold", color: "#333" },
-  waitingSubtitle: { fontSize: 14, color: "#666", marginBottom: 15 },
+  waitingUpperRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    width: "100%",
+  },
+  waitingHeader: {
+    alignItems: "flex-start",
+  },
+  waitingTitle: { fontSize: 18, fontWeight: "bold", color: "#fff" },
+  waitingSubtitle: { fontSize: 14, color: "#ffffff", marginBottom: 15 },
   waitingAvatars: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 15,
     marginBottom: 20,
+    justifyContent: "center",
   },
   waitingAvatarContainer: { alignItems: "center", width: 60 },
   waitingAvatar: {
@@ -896,16 +1000,32 @@ const styles = StyleSheet.create({
     marginBottom: 5,
   },
   waitingAvatarText: { fontSize: 20, fontWeight: "bold", color: "#333" },
-  waitingName: { fontSize: 12, color: "#333", textAlign: "center" },
+  waitingName: {
+    fontSize: 12,
+    color: "#ffffff",
+    fontWeight: "bold",
+    textAlign: "center",
+  },
+  inviteMoreBtn: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#f0f0f0",
+    borderWidth: 2,
+    borderColor: "#333",
+    borderStyle: "dashed",
+  },
   waitingBtnRow: { flexDirection: "row", gap: 10 },
   enterGameBtn: {
     flex: 1,
-    backgroundColor: "#4338CA",
+    backgroundColor: "#ff9900",
     padding: 15,
     borderRadius: 12,
     alignItems: "center",
   },
-  enterGameText: { color: "white", fontWeight: "bold", fontSize: 16 },
+  enterGameText: { color: "#333", fontWeight: "bold", fontSize: 16 },
   cancelGameBtn: {
     flex: 1,
     backgroundColor: "#fee2e2",

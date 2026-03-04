@@ -1,5 +1,6 @@
+import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import {
   arrayRemove,
   arrayUnion,
@@ -46,6 +47,7 @@ const getAvatarGradient = (uid: string) => {
 
 export default function FriendsScreen() {
   const router = useRouter();
+  const { inviteToRoomId } = useLocalSearchParams();
   const currentUser = auth.currentUser;
 
   const [searchText, setSearchText] = useState("");
@@ -66,6 +68,10 @@ export default function FriendsScreen() {
 
   const [loading, setLoading] = useState(false);
   const [searching, setSearching] = useState(false);
+
+  // Selection Mode State
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedFriends, setSelectedFriends] = useState<string[]>([]);
 
   // 1. Listen to MY profile changes (Real-time updates for requests)
   useEffect(() => {
@@ -204,13 +210,13 @@ export default function FriendsScreen() {
     }
   };
 
-  // 5. Remove Friend (NEW)
-  const removeFriend = async (friendId: string) => {
-    if (!currentUser) return;
+  // 5. Remove Selected Friends
+  const removeSelectedFriends = async () => {
+    if (!currentUser || selectedFriends.length === 0) return;
 
     Alert.alert(
-      "Remove Friend",
-      "Are you sure you want to remove this friend?",
+      "Remove Friends",
+      `Are you sure you want to remove ${selectedFriends.length} friend(s)?`,
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -219,20 +225,53 @@ export default function FriendsScreen() {
           onPress: async () => {
             try {
               const myRef = doc(db, "users", currentUser.uid);
-              const friendRef = doc(db, "users", friendId);
 
-              // Remove from both lists
-              await updateDoc(myRef, { friends: arrayRemove(friendId) });
-              await updateDoc(friendRef, {
-                friends: arrayRemove(currentUser.uid),
+              // Process removals in parallel
+              const promises = selectedFriends.map(async (friendId) => {
+                const friendRef = doc(db, "users", friendId);
+                await updateDoc(myRef, { friends: arrayRemove(friendId) });
+                await updateDoc(friendRef, {
+                  friends: arrayRemove(currentUser.uid),
+                });
               });
+
+              await Promise.all(promises);
+              setSelectionMode(false);
+              setSelectedFriends([]);
             } catch (error) {
-              Alert.alert("Error", "Could not remove friend");
+              Alert.alert("Error", "Could not remove some friends");
             }
           },
         },
       ],
     );
+  };
+
+  // 6. Invite Friend to Room
+  const inviteFriendToRoom = async (friendId: string) => {
+    if (!currentUser || !inviteToRoomId) return;
+    try {
+      await sendRequest(friendId); // Reusing sendRequest logic isn't quite right for game invites, let's fix:
+      const targetRef = doc(db, "users", friendId);
+      await updateDoc(targetRef, {
+        gameInvites: arrayUnion({
+          roomId: inviteToRoomId,
+          inviterName: currentUser.displayName || "Player",
+          timestamp: Date.now(),
+        }),
+      });
+      Alert.alert("Invite Sent", "Invitation sent successfully!");
+    } catch (e) {
+      Alert.alert("Error", "Failed to send invite");
+    }
+  };
+
+  const toggleSelection = (id: string) => {
+    if (selectedFriends.includes(id)) {
+      setSelectedFriends(selectedFriends.filter((fid) => fid !== id));
+    } else {
+      setSelectedFriends([...selectedFriends, id]);
+    }
   };
 
   // UI Helper: Render action button based on relationship
@@ -300,7 +339,24 @@ export default function FriendsScreen() {
             >
               <Text style={styles.backButtonText}>← Back</Text>
             </TouchableOpacity>
-            <Text style={styles.title}>Friends</Text>
+            <Text style={styles.title}>
+              {inviteToRoomId ? "Invite Friends" : "Friends"}
+            </Text>
+
+            {!inviteToRoomId && friends.length > 0 && (
+              <TouchableOpacity
+                onPress={() => {
+                  setSelectionMode(!selectionMode);
+                  setSelectedFriends([]);
+                }}
+                style={styles.manageButton}
+              >
+                <Text style={styles.manageButtonText}>
+                  {selectionMode ? "Done" : "Manage"}
+                </Text>
+              </TouchableOpacity>
+            )}
+
             <View style={{ width: 50 }} />
           </View>
           {/* SECTION 1: FRIEND REQUESTS */}
@@ -389,7 +445,13 @@ export default function FriendsScreen() {
                 <Text style={styles.emptyText}>No friends yet.</Text>
               ) : (
                 friends.map((friend) => (
-                  <View key={friend.id} style={styles.friendCard}>
+                  <TouchableOpacity
+                    key={friend.id}
+                    style={styles.friendCard}
+                    disabled={!selectionMode}
+                    onPress={() => toggleSelection(friend.id)}
+                    activeOpacity={0.8}
+                  >
                     <View
                       style={{
                         flexDirection: "row",
@@ -424,18 +486,40 @@ export default function FriendsScreen() {
                         <Text style={styles.friendEmail}>Friend</Text>
                       </View>
                     </View>
-                    {/* Remove Button */}
-                    <TouchableOpacity
-                      style={styles.removeButton}
-                      onPress={() => removeFriend(friend.id)}
-                    >
-                      <Text style={styles.removeButtonText}>Remove</Text>
-                    </TouchableOpacity>
-                  </View>
+
+                    {/* Right Side Action */}
+                    {inviteToRoomId ? (
+                      <TouchableOpacity
+                        style={styles.inviteButton}
+                        onPress={() => inviteFriendToRoom(friend.id)}
+                      >
+                        <Text style={styles.inviteButtonText}>Invite</Text>
+                      </TouchableOpacity>
+                    ) : selectionMode ? (
+                      <View style={styles.checkbox}>
+                        {selectedFriends.includes(friend.id) && (
+                          <Ionicons name="checkmark" size={18} color="white" />
+                        )}
+                      </View>
+                    ) : null}
+                  </TouchableOpacity>
                 ))
               )}
             </View>
           )}
+
+          {/* Bulk Remove Button */}
+          {selectionMode && selectedFriends.length > 0 && (
+            <TouchableOpacity
+              style={styles.bulkRemoveButton}
+              onPress={removeSelectedFriends}
+            >
+              <Text style={styles.bulkRemoveText}>
+                Remove Selected ({selectedFriends.length})
+              </Text>
+            </TouchableOpacity>
+          )}
+
           <View style={{ height: 40 }} />
         </ScrollView>
       </SafeAreaProvider>
@@ -535,16 +619,49 @@ const styles = StyleSheet.create({
   actionBadge: { paddingVertical: 8, paddingHorizontal: 15, borderRadius: 6 },
   actionText: { fontSize: 12, fontWeight: "bold" },
 
-  // Remove Button
-  removeButton: {
-    backgroundColor: "#ffebee",
+  // Invite Button
+  inviteButton: {
+    backgroundColor: "#4a90e2",
     paddingVertical: 6,
     paddingHorizontal: 12,
     borderRadius: 6,
-    borderColor: "#d32f2fff",
-    borderWidth: 1,
   },
-  removeButtonText: { color: "#d32f2f", fontSize: 11, fontWeight: "bold" },
+  inviteButtonText: { color: "white", fontSize: 12, fontWeight: "bold" },
+
+  // Manage Button
+  manageButton: {
+    padding: 8,
+    backgroundColor: "rgba(255,255,255,0.2)",
+    borderRadius: 8,
+  },
+  manageButtonText: { color: "white", fontWeight: "bold", fontSize: 14 },
+
+  // Checkbox
+  checkbox: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: "#666",
+    backgroundColor: "#ccc",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+
+  // Bulk Remove
+  bulkRemoveButton: {
+    backgroundColor: "#d32f2f",
+    padding: 15,
+    borderRadius: 10,
+    alignItems: "center",
+    marginTop: 20,
+    marginBottom: 20,
+  },
+  bulkRemoveText: {
+    color: "white",
+    fontWeight: "bold",
+    fontSize: 16,
+  },
 
   divider: { height: 2, backgroundColor: "#ddd", marginBottom: 20 },
 

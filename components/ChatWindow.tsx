@@ -143,6 +143,8 @@ export default function ChatWindow({
   const [inputText, setInputText] = useState("");
   const [historyVisible, setHistoryVisible] = useState(false);
   const flatListRef = useRef<FlatList>(null);
+  const historyListRef = useRef<FlatList>(null);
+  const [showScrollBottom, setShowScrollBottom] = useState(false);
 
   useEffect(() => {
     if (!gameId) return;
@@ -291,6 +293,19 @@ export default function ChatWindow({
     );
   };
 
+  const scrollToBottom = () => {
+    historyListRef.current?.scrollToEnd({ animated: true });
+    setShowScrollBottom(false);
+  };
+
+  const handleScroll = (event: any) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    const isCloseToBottom =
+      layoutMeasurement.height + contentOffset.y >= contentSize.height - 50;
+
+    setShowScrollBottom(!isCloseToBottom);
+  };
+
   return (
     <KeyboardAvoidingView
       enabled={avoidKeyboard}
@@ -353,12 +368,24 @@ export default function ChatWindow({
               </TouchableOpacity>
             </View>
             <FlatList
+              ref={historyListRef}
               data={messages}
               renderItem={renderHistoryItem}
               keyExtractor={(item) => item.id}
+              style={styles.historyList}
               contentContainerStyle={styles.historyContent}
               showsVerticalScrollIndicator={false}
+              onScroll={handleScroll}
+              scrollEventThrottle={16}
             />
+            {showScrollBottom && (
+              <TouchableOpacity
+                style={styles.scrollToBottomButton}
+                onPress={scrollToBottom}
+              >
+                <Ionicons name="arrow-down" size={20} color="white" />
+              </TouchableOpacity>
+            )}
           </View>
         </View>
       </Modal>
@@ -514,7 +541,26 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     color: "#333",
   },
+  historyList: {
+    flex: 1,
+  },
   historyContent: {
-    paddingBottom: 20,
+    paddingBottom: 60,
+  },
+  scrollToBottomButton: {
+    position: "absolute",
+    bottom: 20,
+    right: 20,
+    backgroundColor: "#333",
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: "center",
+    alignItems: "center",
+    elevation: 5,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
   },
 });

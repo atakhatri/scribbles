@@ -41,6 +41,7 @@ export default function DrawingCanvas({
   onStrokeFinished,
 }: DrawingCanvasProps) {
   const [currentPoints, setCurrentPoints] = useState<Point[]>([]);
+  const pointsRef = useRef<Point[]>([]);
   const currentPathRef = useRef<string>(""); // Ref to keep track of current path string for optimization
 
   // --- SMOOTHING ALGORITHM ---
@@ -79,36 +80,33 @@ export default function DrawingCanvas({
         onPanResponderGrant: (evt: GestureResponderEvent) => {
           const { locationX, locationY } = evt.nativeEvent;
           const startPoint = { x: locationX, y: locationY };
+          pointsRef.current = [startPoint];
           setCurrentPoints([startPoint]);
         },
         onPanResponderMove: (evt: GestureResponderEvent) => {
           const { locationX, locationY } = evt.nativeEvent;
-          setCurrentPoints((prev) => {
-            const last = prev[prev.length - 1];
-            if (!last) return [{ x: locationX, y: locationY }];
+          const prev = pointsRef.current;
+          const last = prev[prev.length - 1];
 
-            const dist = Math.sqrt(
-              Math.pow(locationX - last.x, 2) + Math.pow(locationY - last.y, 2),
-            );
-            if (dist > 2) {
-              return [...prev, { x: locationX, y: locationY }];
-            }
-            return prev;
-          });
+          if (!last) return;
+
+          const dist = Math.sqrt(
+            Math.pow(locationX - last.x, 2) + Math.pow(locationY - last.y, 2),
+          );
+          if (dist > 2) {
+            pointsRef.current.push({ x: locationX, y: locationY });
+            setCurrentPoints([...pointsRef.current]);
+          }
         },
         onPanResponderRelease: () => {
-          setCurrentPoints((finalPoints) => {
-            if (finalPoints.length > 0) {
-              const d = pointsToSvg(finalPoints);
-              const newStroke: Stroke = {
-                path: d,
-                color: color,
-                width: strokeWidth,
-              };
-              onStrokeFinished(newStroke);
-            }
-            return [];
-          });
+          const finalPoints = pointsRef.current;
+          if (finalPoints.length > 0) {
+            const d = pointsToSvg(finalPoints);
+            const newStroke: Stroke = { path: d, color, width: strokeWidth };
+            onStrokeFinished(newStroke);
+          }
+          pointsRef.current = [];
+          setCurrentPoints([]);
         },
       }),
     [enabled, color, strokeWidth, onStrokeFinished],

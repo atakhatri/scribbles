@@ -1,8 +1,10 @@
+import { Ionicons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
 import { arrayRemove, doc, updateDoc } from "firebase/firestore";
 import React, { useState } from "react";
 import {
-  FlatList,
   Modal,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -10,6 +12,33 @@ import {
 } from "react-native";
 import { auth, db } from "../firebaseConfig";
 import InviteFriendsModal from "./InviteFriendsModal";
+
+const AVATAR_GRADIENTS = [
+  ["#FF9A9E", "#FECFEF"], // Pink
+  ["#a18cd1", "#fbc2eb"], // Purple
+  ["#84fab0", "#8fd3f4"], // Aqua
+  ["#fccb90", "#d57eeb"], // Sunset
+  ["#e0c3fc", "#8ec5fc"], // Lavender
+  ["#f093fb", "#f5576c"], // Red/Pink
+  ["#4facfe", "#00f2fe"], // Blue
+  ["#43e97b", "#38f9d7"], // Green
+  ["#FF6B6B", "#FFD166"], // Orange/Red
+  ["#a8edea", "#fed6e3"], // Pastel
+  ["#c471ed", "#f64f59"], // Violet/Red
+  ["#00c6fb", "#005bea"], // Deep Blue
+  ["#f83600", "#f9d423"], // Sunset Orange/Yellow
+  ["#6a11cb", "#2575fc"], // Royal Purple/Blue
+  ["#FF5F6D", "#FFC371"], // Peach/Pink
+  ["#20bf55", "#01baef"], // Green/Blue
+] as const;
+
+const getAvatarGradient = (uid: string) => {
+  let hash = 0;
+  for (let i = 0; i < uid.length; i++) {
+    hash = uid.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return AVATAR_GRADIENTS[Math.abs(hash) % AVATAR_GRADIENTS.length];
+};
 
 export default function WaitingLobby({
   visible,
@@ -54,51 +83,44 @@ export default function WaitingLobby({
       <View style={styles.overlay}>
         <View style={styles.card}>
           <View style={styles.header}>
-            <Text style={styles.title}>Waiting Lobby</Text>
+            <Text style={styles.title}>Lobby: {roomId}</Text>
+            <Text style={styles.subtitle}>Waiting for players...</Text>
           </View>
 
-          <Text style={styles.sub}>Room: {roomId}</Text>
-          <FlatList
-            data={players}
-            keyExtractor={(i) => i.uid}
-            renderItem={({ item }) => (
-              <View style={styles.row}>
-                <Text style={styles.name}>{item.displayName}</Text>
-                <Text style={styles.points}>{item.points ?? 0} pts</Text>
+          <ScrollView contentContainerStyle={styles.avatarsContainer}>
+            {players.map((p) => (
+              <View key={p.uid} style={styles.avatarItem}>
+                <LinearGradient
+                  colors={
+                    p.avatarGradientIndex !== undefined &&
+                    p.avatarGradientIndex >= 0 &&
+                    p.avatarGradientIndex < AVATAR_GRADIENTS.length
+                      ? AVATAR_GRADIENTS[p.avatarGradientIndex]
+                      : getAvatarGradient(p.uid)
+                  }
+                  style={styles.avatar}
+                >
+                  <Text style={styles.avatarText}>
+                    {p.displayName?.[0]?.toUpperCase()}
+                  </Text>
+                </LinearGradient>
+                <Text style={styles.name} numberOfLines={1}>
+                  {p.displayName}
+                </Text>
               </View>
-            )}
-            style={{ marginTop: 10, marginBottom: 10 }}
-            ListEmptyComponent={
-              <Text style={styles.empty}>No players yet</Text>
-            }
-          />
-
-          <View style={styles.actions}>
-            <TouchableOpacity
-              style={styles.copyBtn}
-              onPress={async () => {
-                try {
-                  const Clipboard = await import("expo-clipboard");
-                  await Clipboard.setStringAsync(roomId);
-                } catch (e) {
-                  console.error("copy error", e);
-                }
-              }}
-            >
-              <Text style={styles.copyText}>Copy Code</Text>
-            </TouchableOpacity>
+            ))}
             <TouchableOpacity
               style={styles.inviteBtn}
               onPress={() => setShowInvite(true)}
             >
-              <Text style={styles.inviteText}>Invite Friends</Text>
+              <Ionicons name="add" size={30} color="#666" />
             </TouchableOpacity>
+          </ScrollView>
+
+          <View style={styles.footer}>
             <TouchableOpacity style={styles.leaveBtn} onPress={leaveRoom}>
               <Text style={styles.leaveText}>Leave</Text>
             </TouchableOpacity>
-          </View>
-
-          <View style={styles.start}>
             {hostId === me?.uid && (
               <TouchableOpacity
                 style={styles.startBtn}
@@ -128,60 +150,87 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   card: {
-    width: "92%",
-    backgroundColor: "#e3e49e",
-    borderRadius: 12,
-    padding: 14,
+    width: "90%",
+    backgroundColor: "#fff",
+    borderRadius: 20,
+    padding: 20,
+    maxHeight: "80%",
+    elevation: 5,
   },
   header: {
-    flexDirection: "row",
-    justifyContent: "space-between",
+    marginBottom: 20,
     alignItems: "center",
   },
-  title: { fontSize: 18, fontWeight: "700" },
-  close: { color: "#333", fontWeight: "700" },
-  sub: { marginTop: 8, color: "#555" },
-  row: {
+  title: { fontSize: 22, fontWeight: "bold", color: "#333" },
+  subtitle: { fontSize: 14, color: "#666", marginTop: 4 },
+  avatarsContainer: {
     flexDirection: "row",
-    justifyContent: "space-between",
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: "#1d1d1d",
-  },
-  name: { fontSize: 16 },
-  points: { color: "#666" },
-  empty: { textAlign: "center", color: "#666", padding: 20 },
-  actions: {
-    flexDirection: "row",
+    flexWrap: "wrap",
     justifyContent: "center",
-    gap: 12,
-    marginTop: 12,
+    gap: 15,
+    paddingBottom: 20,
   },
-  copyBtn: {
-    padding: 10,
-    backgroundColor: "#f3f4f6",
-    borderRadius: 8,
-    width: "30%",
+  avatarItem: {
     alignItems: "center",
+    width: 70,
   },
-  copyText: { color: "#333", fontWeight: "600" },
-  inviteBtn: { padding: 10, backgroundColor: "#4c685f", borderRadius: 8 },
-  inviteText: { color: "#38ca9c", fontWeight: "700" },
-  leaveBtn: { padding: 10, backgroundColor: "#fee2e2", borderRadius: 8 },
-  leaveText: {
-    color: "#b91c1c",
-    fontWeight: "700",
-    textAlign: "center",
+  avatar: {
     width: 60,
-  },
-  start: { alignItems: "center", marginTop: 10 },
-  startBtn: {
-    marginTop: 12,
-    padding: 12,
-    backgroundColor: "#b2b2b2",
-    borderRadius: 8,
+    height: 60,
+    borderRadius: 30,
+    justifyContent: "center",
     alignItems: "center",
-    width: "50%",
+    marginBottom: 5,
   },
-  startText: { color: "#333", fontWeight: "800" },
+  avatarText: {
+    fontSize: 24,
+    fontWeight: "bold",
+    color: "#333",
+  },
+  name: {
+    fontSize: 12,
+    color: "#333",
+    textAlign: "center",
+    fontWeight: "600",
+  },
+  inviteBtn: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#f0f0f0",
+    borderWidth: 2,
+    borderColor: "#ccc",
+    borderStyle: "dashed",
+  },
+  footer: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 10,
+  },
+  leaveBtn: {
+    flex: 1,
+    padding: 15,
+    backgroundColor: "#fee2e2",
+    borderRadius: 12,
+    alignItems: "center",
+  },
+  leaveText: {
+    color: "#991b1b",
+    fontWeight: "bold",
+    fontSize: 16,
+  },
+  startBtn: {
+    flex: 1,
+    padding: 15,
+    backgroundColor: "#ff9900",
+    borderRadius: 12,
+    alignItems: "center",
+  },
+  startText: {
+    color: "#333",
+    fontWeight: "bold",
+    fontSize: 16,
+  },
 });
