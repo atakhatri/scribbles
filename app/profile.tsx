@@ -1,18 +1,11 @@
 import { Ionicons } from "@expo/vector-icons";
 import Constants from "expo-constants";
+import * as FileSystem from "expo-file-system";
+import * as IntentLauncher from "expo-intent-launcher";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import { getAuth, signOut, updateProfile } from "firebase/auth";
-import {
-  collection,
-  doc,
-  getDocs,
-  getFirestore,
-  onSnapshot,
-  query,
-  updateDoc,
-  where,
-} from "firebase/firestore";
+import { doc, getFirestore, onSnapshot, updateDoc } from "firebase/firestore";
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -20,6 +13,7 @@ import {
   Image,
   KeyboardAvoidingView,
   Linking,
+  Modal,
   Platform,
   ScrollView,
   StyleSheet,
@@ -64,7 +58,8 @@ export default function ProfileScreen() {
   const [stats, setStats] = useState({ wins: 0, totalGames: 0, score: 0 });
   const [activeTab, setActiveTab] = useState<"profile" | "settings">("profile");
   const [selectedGradientIndex, setSelectedGradientIndex] = useState(-1);
-  const [nameError, setNameError] = useState("");
+  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [isDownloading, setIsDownloading] = useState(false);
 
   const currentAppVersion = Constants.expoConfig?.version || "1.0.0";
 
@@ -137,28 +132,11 @@ export default function ProfileScreen() {
   };
 
   const handleUpdateProfile = async () => {
-    setNameError("");
     if (!user || !displayName.trim()) return;
     setUpdating(true);
     try {
-      const newName = displayName.trim();
-
-      // Check for uniqueness
-      const usersRef = collection(db, "users");
-      const q = query(usersRef, where("displayName", "==", newName));
-      const querySnapshot = await getDocs(q);
-
-      if (
-        !querySnapshot.empty &&
-        querySnapshot.docs.some((d) => d.id !== user.uid)
-      ) {
-        setNameError("This username is already taken.");
-        setUpdating(false);
-        return;
-      }
-
-      await updateProfile(user, { displayName: newName });
-      await updateDoc(doc(db, "users", user.uid), { displayName: newName });
+      await updateProfile(user, { displayName });
+      await updateDoc(doc(db, "users", user.uid), { displayName });
       Alert.alert("Success", "Profile updated successfully!");
     } catch (error) {
       Alert.alert("Error", "Failed to update profile.");
@@ -173,6 +151,52 @@ export default function ProfileScreen() {
       router.replace("/auth/login");
     } catch (error) {
       Alert.alert("Error", "Failed to sign out.");
+    }
+  };
+
+  const handleDownloadAndInstall = async (url: string) => {
+    if (Platform.OS === "android") {
+      try {
+        setIsDownloading(true);
+        setDownloadProgress(0);
+
+        const downloadResumable = FileSystem.createDownloadResumable(
+          url,
+          ((FileSystem as any).documentDirectory ?? "") + "update.apk",
+          {},
+          (progress) => {
+            const p =
+              progress.totalBytesWritten / progress.totalBytesExpectedToWrite;
+            setDownloadProgress(p);
+          },
+        );
+        const downloadRes = await downloadResumable.downloadAsync();
+
+        setIsDownloading(false);
+
+        if (!downloadRes || !downloadRes.uri)
+          throw new Error("Download failed");
+
+        const contentUri = await FileSystem.getContentUriAsync(downloadRes.uri);
+        await IntentLauncher.startActivityAsync("android.intent.action.VIEW", {
+          data: contentUri,
+          flags: 1,
+          type: "application/vnd.android.package-archive",
+        });
+
+        // Delete the APK file after a short delay to save space
+        // (Giving the package installer time to read the file)
+        setTimeout(async () => {
+          try {
+            await FileSystem.deleteAsync(downloadRes.uri, { idempotent: true });
+          } catch (e) {}
+        }, 10000);
+      } catch (e) {
+        setIsDownloading(false);
+        Linking.openURL(url);
+      }
+    } else {
+      Linking.openURL(url);
     }
   };
 
@@ -200,7 +224,10 @@ export default function ProfileScreen() {
           `A new version (${remoteVersion}) is available.\n\nWould you like to download the latest APK?`,
           [
             { text: "Later", style: "cancel" },
-            { text: "Download Now", onPress: () => Linking.openURL(apkUrl) },
+            {
+              text: "Download Now",
+              onPress: () => handleDownloadAndInstall(apkUrl),
+            },
           ],
         );
       } else {
@@ -360,10 +387,7 @@ export default function ProfileScreen() {
                 <TextInput
                   style={styles.input}
                   value={displayName}
-                  onChangeText={(text) => {
-                    setDisplayName(text);
-                    setNameError("");
-                  }}
+                  onChangeText={setDisplayName}
                   placeholder="Enter name"
                   placeholderTextColor="#999"
                 />
@@ -379,9 +403,6 @@ export default function ProfileScreen() {
                   )}
                 </TouchableOpacity>
               </View>
-              {nameError ? (
-                <Text style={styles.errorText}>{nameError}</Text>
-              ) : null}
 
               <View style={styles.divider} />
 
@@ -419,6 +440,26 @@ export default function ProfileScreen() {
           )}
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* Download Progress Modal */}
+      <Modal visible={isDownloading} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Downloading Update...</Text>
+            <View style={styles.progressBarContainer}>
+              <View
+                style={[
+                  styles.progressBar,
+                  { width: `${downloadProgress * 100}%` },
+                ]}
+              />
+            </View>
+            <Text style={styles.progressText}>
+              {Math.round(downloadProgress * 100)}%
+            </Text>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -586,13 +627,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     elevation: 10,
   },
-  errorText: {
-    color: "#FF6B6B",
-    fontSize: 14,
-    marginTop: -15,
-    marginBottom: 15,
-    fontWeight: "bold",
-  },
   saveButtonText: { color: "#333", fontWeight: "800", fontSize: 16 },
   divider: {
     height: 1,
@@ -634,5 +668,42 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 10,
     elevation: 15,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+  },
+  modalContent: {
+    backgroundColor: "white",
+    borderRadius: 20,
+    padding: 20,
+    alignItems: "center",
+    width: "80%",
+    elevation: 5,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: "bold",
+    color: "#333",
+    marginBottom: 10,
+  },
+  progressBarContainer: {
+    width: "100%",
+    height: 10,
+    backgroundColor: "#eee",
+    borderRadius: 5,
+    overflow: "hidden",
+    marginVertical: 10,
+  },
+  progressBar: {
+    height: "100%",
+    backgroundColor: "#4ECDC4",
+  },
+  progressText: {
+    color: "#666",
+    fontWeight: "600",
   },
 });
