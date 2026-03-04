@@ -1,3 +1,4 @@
+import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import {
   arrayRemove,
@@ -23,13 +24,25 @@ import {
   View,
 } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
+import GRADIENTS from "../data/gradients";
 import { auth, db } from "../firebaseConfig";
 
 interface UserProfile {
   id: string;
   username: string;
   email: string;
+  avatarGradientIndex?: number;
 }
+
+const AVATAR_GRADIENTS = GRADIENTS;
+
+const getAvatarGradient = (uid: string) => {
+  let hash = 0;
+  for (let i = 0; i < uid.length; i++) {
+    hash = uid.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return AVATAR_GRADIENTS[Math.abs(hash) % AVATAR_GRADIENTS.length];
+};
 
 export default function FriendsScreen() {
   const router = useRouter();
@@ -45,10 +58,10 @@ export default function FriendsScreen() {
   // My ID lists (for UI state)
   const [myFriendIds, setMyFriendIds] = useState<string[]>([]);
   const [myIncomingRequestIds, setMyIncomingRequestIds] = useState<string[]>(
-    []
+    [],
   );
   const [myOutgoingRequestIds, setMyOutgoingRequestIds] = useState<string[]>(
-    []
+    [],
   );
 
   const [loading, setLoading] = useState(false);
@@ -88,7 +101,7 @@ export default function FriendsScreen() {
   // Helper: Fetch user details from a list of IDs
   const fetchUsersByIds = async (
     ids: string[],
-    setFunction: (users: UserProfile[]) => void
+    setFunction: (users: UserProfile[]) => void,
   ) => {
     try {
       // Firestore 'in' query is limited to 10.
@@ -121,7 +134,7 @@ export default function FriendsScreen() {
       const usernameQuery = query(
         usersRef,
         where("username", ">=", text),
-        where("username", "<=", text + "\uf8ff")
+        where("username", "<=", text + "\uf8ff"),
       );
 
       // QUERY 2: Email Exact Match
@@ -134,10 +147,10 @@ export default function FriendsScreen() {
 
       const foundUsers = new Map<string, UserProfile>();
       usernameSnap.forEach((doc) =>
-        foundUsers.set(doc.id, { id: doc.id, ...doc.data() } as UserProfile)
+        foundUsers.set(doc.id, { id: doc.id, ...doc.data() } as UserProfile),
       );
       emailSnap.forEach((doc) =>
-        foundUsers.set(doc.id, { id: doc.id, ...doc.data() } as UserProfile)
+        foundUsers.set(doc.id, { id: doc.id, ...doc.data() } as UserProfile),
       );
 
       foundUsers.delete(currentUser?.uid || ""); // Remove myself
@@ -218,7 +231,7 @@ export default function FriendsScreen() {
             }
           },
         },
-      ]
+      ],
     );
   };
 
@@ -384,11 +397,28 @@ export default function FriendsScreen() {
                         flex: 1,
                       }}
                     >
-                      <View style={styles.avatar}>
+                      <LinearGradient
+                        colors={
+                          friend.avatarGradientIndex !== undefined &&
+                          friend.avatarGradientIndex >= 0 &&
+                          friend.avatarGradientIndex < AVATAR_GRADIENTS.length
+                            ? (AVATAR_GRADIENTS[friend.avatarGradientIndex] as [
+                                string,
+                                string,
+                                ...string[],
+                              ])
+                            : (getAvatarGradient(friend.id) as [
+                                string,
+                                string,
+                                ...string[],
+                              ])
+                        }
+                        style={styles.avatar}
+                      >
                         <Text style={styles.avatarText}>
                           {friend.username[0].toUpperCase()}
                         </Text>
-                      </View>
+                      </LinearGradient>
                       <View>
                         <Text style={styles.friendName}>{friend.username}</Text>
                         <Text style={styles.friendEmail}>Friend</Text>
@@ -532,7 +562,6 @@ const styles = StyleSheet.create({
     width: 50,
     height: 50,
     borderRadius: 25,
-    backgroundColor: "#333",
     justifyContent: "center",
     alignItems: "center",
     marginRight: 15,

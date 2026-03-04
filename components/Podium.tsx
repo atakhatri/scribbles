@@ -1,4 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
 import React from "react";
 import {
   Image,
@@ -14,6 +15,7 @@ interface Player {
   displayName: string;
   points: number;
   avatar?: string | null;
+  avatarGradientIndex?: number;
 }
 
 interface PodiumProps {
@@ -21,6 +23,33 @@ interface PodiumProps {
   onExit?: () => void;
   onPlayAgain?: () => void;
 }
+
+const AVATAR_GRADIENTS = [
+  ["#FF9A9E", "#FECFEF"], // Pink
+  ["#a18cd1", "#fbc2eb"], // Purple
+  ["#84fab0", "#8fd3f4"], // Aqua
+  ["#fccb90", "#d57eeb"], // Sunset
+  ["#e0c3fc", "#8ec5fc"], // Lavender
+  ["#f093fb", "#f5576c"], // Red/Pink
+  ["#4facfe", "#00f2fe"], // Blue
+  ["#43e97b", "#38f9d7"], // Green
+  ["#FF6B6B", "#FFD166"], // Orange/Red
+  ["#a8edea", "#fed6e3"], // Pastel
+  ["#c471ed", "#f64f59"], // Violet/Red
+  ["#00c6fb", "#005bea"], // Deep Blue
+  ["#f83600", "#f9d423"], // Sunset Orange/Yellow
+  ["#6a11cb", "#2575fc"], // Royal Purple/Blue
+  ["#FF5F6D", "#FFC371"], // Peach/Pink
+  ["#20bf55", "#01baef"], // Green/Blue
+] as const;
+
+const getAvatarGradient = (uid: string) => {
+  let hash = 0;
+  for (let i = 0; i < uid.length; i++) {
+    hash = uid.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return AVATAR_GRADIENTS[Math.abs(hash) % AVATAR_GRADIENTS.length];
+};
 
 export default function Podium({ players, onExit, onPlayAgain }: PodiumProps) {
   const first = players[0] || null;
@@ -48,16 +77,20 @@ export default function Podium({ players, onExit, onPlayAgain }: PodiumProps) {
                     style={styles.avatar}
                   />
                 ) : (
-                  <View
-                    style={[
-                      styles.avatarPlaceholder,
-                      { backgroundColor: "#9CA3AF" },
-                    ]}
+                  <LinearGradient
+                    colors={
+                      second.avatarGradientIndex !== undefined &&
+                      second.avatarGradientIndex >= 0 &&
+                      second.avatarGradientIndex < AVATAR_GRADIENTS.length
+                        ? AVATAR_GRADIENTS[second.avatarGradientIndex]
+                        : getAvatarGradient(second.uid)
+                    }
+                    style={styles.avatarPlaceholder}
                   >
                     <Text style={styles.avatarInitials}>
-                      {second.displayName.charAt(0)}
+                      {second.displayName.charAt(0).toUpperCase()}
                     </Text>
-                  </View>
+                  </LinearGradient>
                 )}
                 <View
                   style={[styles.rankBadge, { backgroundColor: "#9CA3AF" }]}
@@ -81,7 +114,7 @@ export default function Podium({ players, onExit, onPlayAgain }: PodiumProps) {
               <Ionicons
                 name="trophy"
                 size={32}
-                color="#F59E0B"
+                color="#ffffff"
                 style={styles.crown}
               />
               <View style={styles.avatarContainer}>
@@ -91,16 +124,20 @@ export default function Podium({ players, onExit, onPlayAgain }: PodiumProps) {
                     style={styles.avatarLarge}
                   />
                 ) : (
-                  <View
-                    style={[
-                      styles.avatarLargePlaceholder,
-                      { backgroundColor: "#FCD34D" },
-                    ]}
+                  <LinearGradient
+                    colors={
+                      first.avatarGradientIndex !== undefined &&
+                      first.avatarGradientIndex >= 0 &&
+                      first.avatarGradientIndex < AVATAR_GRADIENTS.length
+                        ? AVATAR_GRADIENTS[first.avatarGradientIndex]
+                        : getAvatarGradient(first.uid)
+                    }
+                    style={styles.avatarLargePlaceholder}
                   >
                     <Text style={styles.avatarInitialsLarge}>
-                      {first.displayName.charAt(0)}
+                      {first.displayName.charAt(0).toUpperCase()}
                     </Text>
-                  </View>
+                  </LinearGradient>
                 )}
                 <View
                   style={[styles.rankBadge, { backgroundColor: "#F59E0B" }]}
@@ -125,16 +162,20 @@ export default function Podium({ players, onExit, onPlayAgain }: PodiumProps) {
                 {third.avatar ? (
                   <Image source={{ uri: third.avatar }} style={styles.avatar} />
                 ) : (
-                  <View
-                    style={[
-                      styles.avatarPlaceholder,
-                      { backgroundColor: "#D97706" },
-                    ]}
+                  <LinearGradient
+                    colors={
+                      third.avatarGradientIndex !== undefined &&
+                      third.avatarGradientIndex >= 0 &&
+                      third.avatarGradientIndex < AVATAR_GRADIENTS.length
+                        ? AVATAR_GRADIENTS[third.avatarGradientIndex]
+                        : getAvatarGradient(third.uid)
+                    }
+                    style={styles.avatarPlaceholder}
                   >
                     <Text style={styles.avatarInitials}>
-                      {third.displayName.charAt(0)}
+                      {third.displayName.charAt(0).toUpperCase()}
                     </Text>
-                  </View>
+                  </LinearGradient>
                 )}
                 <View
                   style={[styles.rankBadge, { backgroundColor: "#D97706" }]}
@@ -305,7 +346,7 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
   },
   crown: {
-    marginBottom: -12,
+    marginBottom: 0,
     zIndex: 10,
     boxShadow: "0px 2px 2px rgba(0,0,0,0.2)",
   },

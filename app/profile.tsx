@@ -1,534 +1,598 @@
 import { Ionicons } from "@expo/vector-icons";
 import Constants from "expo-constants";
-import * as FileSystem from "expo-file-system";
-import * as ImagePicker from "expo-image-picker";
-import * as IntentLauncher from "expo-intent-launcher";
+import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
-import { onAuthStateChanged, signOut, updateProfile } from "firebase/auth";
-import { doc, updateDoc } from "firebase/firestore";
-import {
-  getDownloadURL,
-  getStorage,
-  ref,
-  uploadString,
-} from "firebase/storage";
-import React, { useEffect, useRef, useState } from "react";
+import { getAuth, signOut, updateProfile } from "firebase/auth";
+import { doc, getFirestore, onSnapshot, updateDoc } from "firebase/firestore";
+import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  Animated,
-  Dimensions,
-  Easing,
   Image,
-  ImageBackground,
+  KeyboardAvoidingView,
+  Linking,
   Platform,
+  ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaProvider } from "react-native-safe-area-context";
-// Import from your local configuration file
-import { auth, db } from "../firebaseConfig";
 
-// ---------------------------------------------------------
-// 🚨 IMPORTANT: INSTALL DEPENDENCIES
-// Run this in your terminal to ensure these packages are installed:
-// npx expo install expo-file-system expo-intent-launcher expo-constants expo-image-picker
-// ---------------------------------------------------------
-
-const { width } = Dimensions.get("window");
-
-// --- Configuration ---
-// REPLACE with your actual version JSON URL
 const UPDATE_JSON_URL =
   "https://gist.githubusercontent.com/atakhatri/14928794d017d4b66a845d2afb58f487/raw/version.json";
 
-export default function Profile() {
+const AVATAR_GRADIENTS = [
+  ["#FF9A9E", "#FECFEF"], // Pink
+  ["#a18cd1", "#fbc2eb"], // Purple
+  ["#84fab0", "#8fd3f4"], // Aqua
+  ["#fccb90", "#d57eeb"], // Sunset
+  ["#e0c3fc", "#8ec5fc"], // Lavender
+  ["#f093fb", "#f5576c"], // Red/Pink
+  ["#4facfe", "#00f2fe"], // Blue
+  ["#43e97b", "#38f9d7"], // Green
+  ["#FF6B6B", "#FFD166"], // Orange/Red
+  ["#a8edea", "#fed6e3"], // Pastel
+  ["#c471ed", "#f64f59"], // Violet/Red
+  ["#00c6fb", "#005bea"], // Deep Blue
+  ["#f83600", "#f9d423"], // Sunset Orange/Yellow
+  ["#6a11cb", "#2575fc"], // Royal Purple/Blue
+  ["#FF5F6D", "#FFC371"], // Peach/Pink
+  ["#20bf55", "#01baef"], // Green/Blue
+] as const;
+
+export default function ProfileScreen() {
   const router = useRouter();
+  const auth = getAuth();
+  const db = getFirestore();
+  const user = auth.currentUser;
 
-  // Auth State
-  const [user, setUser] = useState(auth.currentUser);
+  const [loading, setLoading] = useState(true);
+  const [updating, setUpdating] = useState(false);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [displayName, setDisplayName] = useState(user?.displayName || "");
+  const [stats, setStats] = useState({ wins: 0, totalGames: 0, score: 0 });
+  const [activeTab, setActiveTab] = useState<"profile" | "settings">("profile");
+  const [selectedGradientIndex, setSelectedGradientIndex] = useState(-1);
 
-  // UI State
-  const [showSettings, setShowSettings] = useState(false);
-  const [avatar, setAvatar] = useState(user?.photoURL || null);
+  const currentAppVersion = Constants.expoConfig?.version || "1.0.0";
 
-  // Update & Download State
-  const [isDownloading, setIsDownloading] = useState(false);
-  const [downloadProgress, setDownloadProgress] = useState(0);
-  const [isChecking, setIsChecking] = useState(false);
+  // Deterministic gradient based on UID
+  const getDefaultGradientIndex = (uid: string | undefined) => {
+    if (!uid) return 0;
+    let hash = 0;
+    for (let i = 0; i < uid.length; i++) {
+      hash = uid.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    return Math.abs(hash) % AVATAR_GRADIENTS.length;
+  };
 
-  // Animation
-  const slideAnim = useRef(new Animated.Value(width)).current;
+  const currentGradientIndex =
+    selectedGradientIndex >= 0 &&
+    selectedGradientIndex < AVATAR_GRADIENTS.length
+      ? selectedGradientIndex
+      : getDefaultGradientIndex(user?.uid);
 
-  // --- Auth Listener ---
+  // REAL-TIME SYNC: Listen to user document changes
   useEffect(() => {
-    // Listen for auth state changes to ensure we have the user object
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      if (currentUser?.photoURL) {
-        setAvatar(currentUser.photoURL);
-      }
-    });
+    if (!user) {
+      setLoading(false);
+      return;
+    }
+
+    // Set up a real-time listener for the user's document in Firestore
+    const userDocRef = doc(db, "users", user.uid);
+
+    const unsubscribe = onSnapshot(
+      userDocRef,
+      (docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          setStats({
+            wins: data.wins || 0,
+            totalGames: data.totalGames || 0,
+            score: data.totalScore || 0,
+          });
+          if (data.avatarGradientIndex !== undefined) {
+            setSelectedGradientIndex(data.avatarGradientIndex);
+          }
+          // Sync display name if it changed elsewhere
+          if (
+            data.displayName &&
+            data.displayName !== displayName &&
+            !updating
+          ) {
+            setDisplayName(data.displayName);
+          }
+        }
+        setLoading(false);
+      },
+      (error) => {
+        console.error("Error listening to user data:", error);
+        setLoading(false);
+      },
+    );
+
     return () => unsubscribe();
-  }, []);
+  }, [user]);
 
-  useEffect(() => {
-    Animated.timing(slideAnim, {
-      toValue: showSettings ? 0 : width,
-      duration: 300,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    }).start();
-  }, [showSettings]);
-
-  // --- Avatar Logic ---
-  const handlePickAvatar = async () => {
-    try {
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true,
-        aspect: [1, 1],
-        quality: 0.5,
+  const handleGradientSelect = async (index: number) => {
+    setSelectedGradientIndex(index);
+    if (user) {
+      await updateDoc(doc(db, "users", user.uid), {
+        avatarGradientIndex: index,
       });
-
-      if (!result.canceled && result.assets[0].uri) {
-        await uploadAvatar(result.assets[0].uri);
-      }
-    } catch (e) {
-      console.error("Image Picker Error:", e);
-      Alert.alert("Error", "Could not pick image.");
     }
   };
 
-  const uploadAvatar = async (uri: string) => {
-    if (!user) return;
+  const handleUpdateProfile = async () => {
+    if (!user || !displayName.trim()) return;
+    setUpdating(true);
     try {
-      const base64 = await FileSystem.readAsStringAsync(uri, {
-        encoding: "base64",
-      });
-
-      // Get storage instance (uses default app initialized in firebaseConfig)
-      const storage = getStorage();
-      const storageRef = ref(storage, `avatars/${user.uid}_${Date.now()}`);
-
-      await uploadString(storageRef, base64, "base64");
-      const downloadURL = await getDownloadURL(storageRef);
-
-      await updateProfile(user, { photoURL: downloadURL });
-
-      const userRef = doc(db, "users", user.uid);
-      await updateDoc(userRef, {
-        avatarUrl: downloadURL,
-        photoURL: downloadURL,
-      });
-
-      setAvatar(downloadURL);
-      Alert.alert("Success", "Avatar updated!");
+      await updateProfile(user, { displayName });
+      await updateDoc(doc(db, "users", user.uid), { displayName });
+      Alert.alert("Success", "Profile updated successfully!");
     } catch (error) {
-      console.error("Avatar Upload Error:", error);
-      Alert.alert("Error", "Failed to upload avatar.");
+      Alert.alert("Error", "Failed to update profile.");
+    } finally {
+      setUpdating(false);
     }
   };
 
-  // --- Update Logic ---
-  const handleCheckUpdate = async () => {
-    if (Platform.OS !== "android") {
-      Alert.alert(
-        "Not Supported",
-        "In-app APK updates are currently only supported on Android.",
-      );
-      return;
-    }
-
-    // Check for Expo Go
-    if (Constants.appOwnership === "expo") {
-      Alert.alert(
-        "Development Mode",
-        "APK updates cannot be tested in Expo Go. Please use a standalone build.",
-      );
-      return;
-    }
-
-    setIsChecking(true);
+  const handleLogout = async () => {
     try {
-      const res = await fetch(UPDATE_JSON_URL, {
-        headers: { "Cache-Control": "no-cache" },
-      });
+      await signOut(auth);
+      router.replace("/auth/login");
+    } catch (error) {
+      Alert.alert("Error", "Failed to sign out.");
+    }
+  };
 
-      if (!res.ok) throw new Error("Failed to fetch version info");
+  const checkForUpdates = async () => {
+    setCheckingUpdate(true);
+    try {
+      const response = await fetch(
+        `${UPDATE_JSON_URL}?cache_bust=${Date.now()}`,
+        {
+          headers: {
+            "Cache-Control": "no-cache",
+            Pragma: "no-cache",
+            Expires: "0",
+          },
+        },
+      );
 
-      const data = await res.json();
+      const data = await response.json();
+      const remoteVersion = data.version;
+      const apkUrl = data.apkUrl;
 
-      // Get current version safely
-      const currentVersion = Constants.expoConfig?.version || "1.0.0";
-
-      if (data.version && data.version !== currentVersion) {
+      if (remoteVersion !== currentAppVersion) {
         Alert.alert(
           "Update Available",
-          `Version ${data.version} is available. Download now?`,
+          `A new version (${remoteVersion}) is available.\n\nWould you like to download the latest APK?`,
           [
-            { text: "Cancel", style: "cancel" },
-            {
-              text: "Update",
-              onPress: () => downloadAndInstall(data.apkUrl),
-            },
+            { text: "Later", style: "cancel" },
+            { text: "Download Now", onPress: () => Linking.openURL(apkUrl) },
           ],
         );
       } else {
-        Alert.alert("Up to date", "You are using the latest version.");
+        Alert.alert(
+          "Up to Date",
+          `You are running the latest version (${currentAppVersion}).`,
+        );
       }
-    } catch (e) {
-      console.error(e);
-      Alert.alert(
-        "Error",
-        "Failed to check for updates. Please try again later.",
-      );
-    } finally {
-      setIsChecking(false);
-    }
-  };
-
-  const downloadAndInstall = async (url: string) => {
-    if (!url) {
-      Alert.alert("Error", "Invalid update URL.");
-      return;
-    }
-
-    setIsDownloading(true);
-    setDownloadProgress(0);
-
-    // FIX: Using 'any' type to bypass TypeScript version mismatch errors for DownloadProgressData
-    const callback = (downloadProgress: any) => {
-      if (downloadProgress.totalBytesExpectedToWrite === 0) return;
-      const progress =
-        downloadProgress.totalBytesWritten /
-        downloadProgress.totalBytesExpectedToWrite;
-      setDownloadProgress(progress);
-    };
-
-    // FIX: Casting FileSystem to 'any' to safely access documentDirectory if types are missing
-    const docDir = (FileSystem as any).documentDirectory;
-
-    if (!docDir) {
-      Alert.alert("Error", "Device storage unavailable.");
-      setIsDownloading(false);
-      return;
-    }
-
-    const downloadResumable = FileSystem.createDownloadResumable(
-      url,
-      docDir + "update.apk",
-      {},
-      callback,
-    );
-
-    try {
-      const result = await downloadResumable.downloadAsync();
-
-      if (result?.uri) {
-        const contentUri = await FileSystem.getContentUriAsync(result.uri);
-
-        await IntentLauncher.startActivityAsync("android.intent.action.VIEW", {
-          data: contentUri,
-          flags: 1, // FLAG_GRANT_READ_URI_PERMISSION
-          type: "application/vnd.android.package-archive",
-        });
-      }
-    } catch (e) {
-      console.error("Download/Install Error:", e);
-      Alert.alert(
-        "Error",
-        "Download or installation failed. Please check permissions.",
-      );
-    } finally {
-      setIsDownloading(false);
-      setDownloadProgress(0);
-    }
-  };
-
-  const handleSignOut = async () => {
-    try {
-      await signOut(auth);
-      router.replace("/");
     } catch (error) {
-      Alert.alert("Error", "Failed to sign out");
+      Alert.alert("Error", "Could not check for updates.");
+    } finally {
+      setCheckingUpdate(false);
     }
   };
 
-  // Render Logic
-  const getInitials = (name: string | null | undefined) => {
-    return name ? name.charAt(0).toUpperCase() : "?";
-  };
+  if (loading) {
+    return (
+      <View style={styles.centered}>
+        <ActivityIndicator size="large" color="#FF6B6B" />
+      </View>
+    );
+  }
 
   return (
-    <ImageBackground
-      source={require("../assets/images/profile.jpeg")}
-      style={styles.backgroundImage}
-      resizeMode="cover"
-    >
-      <SafeAreaProvider style={styles.container}>
-        <View style={styles.header}>
-          <TouchableOpacity
-            style={styles.headerButton}
-            onPress={() => router.back()}
-          >
-            <Ionicons name="arrow-back" size={24} color="#333" />
-            <Text style={styles.headerButtonText}>Back</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => setShowSettings(true)}>
-            <Ionicons name="settings-sharp" size={28} color="#333" />
-          </TouchableOpacity>
-        </View>
+    <View style={styles.container}>
+      {/* RESTORED BACKGROUND: Using blurRadius directly on Image for reliability */}
+      <Image
+        source={require("../assets/images/profile.jpeg")}
+        style={styles.backgroundImage}
+        blurRadius={20}
+      />
+      <View
+        style={[
+          StyleSheet.absoluteFill,
+          { backgroundColor: "rgba(0, 0, 0, 0)" },
+        ]}
+      />
 
-        <View style={styles.card}>
-          <TouchableOpacity onPress={handlePickAvatar} style={styles.avatar}>
-            {avatar ? (
-              <Image source={{ uri: avatar }} style={styles.avatarImage} />
-            ) : (
-              <Text style={styles.avatarText}>
-                {getInitials(user?.displayName)}
-              </Text>
-            )}
-            <View style={styles.editBadge}>
-              <Ionicons name="camera" size={14} color="white" />
-            </View>
-          </TouchableOpacity>
-
-          <Text style={styles.username}>
-            {user?.displayName || "Anonymous Player"}
-          </Text>
-          <Text style={styles.email}>{user?.email || "No email linked"}</Text>
-
-          <View style={styles.divider} />
-
-          <TouchableOpacity
-            style={styles.button}
-            onPress={() => router.push("/friends")}
-          >
-            <Text style={styles.buttonText}>My Friends</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Settings Menu Overlay */}
-        {showSettings && (
-          <TouchableOpacity
-            style={styles.backdrop}
-            activeOpacity={1}
-            onPress={() => setShowSettings(false)}
-          />
-        )}
-
-        <Animated.View
-          style={[
-            styles.settingsPanel,
-            { transform: [{ translateX: slideAnim }] },
-          ]}
+      <View style={styles.header}>
+        <TouchableOpacity
+          onPress={() => router.back()}
+          style={styles.backButton}
         >
-          <Text style={styles.settingsTitle}>Settings</Text>
-          <View style={styles.divider} />
+          <Ionicons name="arrow-back" size={28} color="white" />
+        </TouchableOpacity>
+        <Text style={styles.headerTitle}>Profile</Text>
+        <View style={{ width: 40 }} />
+      </View>
 
-          {/* Update Button Logic */}
-          {isDownloading ? (
-            <View style={styles.downloadContainer}>
-              <Text style={styles.downloadText}>
-                Downloading: {Math.round(downloadProgress * 100)}%
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 100 : 0}
+        style={{ flex: 1 }}
+      >
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.profileHeader}>
+            <LinearGradient
+              colors={AVATAR_GRADIENTS[currentGradientIndex]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.avatarContainer}
+            >
+              <Text style={styles.avatarText}>
+                {user?.displayName?.charAt(0).toUpperCase() ||
+                  user?.email?.charAt(0).toUpperCase()}
               </Text>
-              <View style={styles.progressBar}>
-                <View
-                  style={[
-                    styles.progressFill,
-                    { width: `${downloadProgress * 100}%` },
-                  ]}
-                />
+            </LinearGradient>
+            <Text style={styles.userName}>{user?.displayName || "User"}</Text>
+            <Text style={styles.userEmail}>
+              {user?.email || "Guest Account"}
+            </Text>
+          </View>
+
+          <View style={styles.tabContainer}>
+            <TouchableOpacity
+              style={[styles.tab, activeTab === "profile" && styles.activeTab]}
+              onPress={() => setActiveTab("profile")}
+            >
+              <Text
+                style={[
+                  styles.tabText,
+                  activeTab === "profile" && styles.activeTabText,
+                ]}
+              >
+                Stats
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.tab, activeTab === "settings" && styles.activeTab]}
+              onPress={() => setActiveTab("settings")}
+            >
+              <Text
+                style={[
+                  styles.tabText,
+                  activeTab === "settings" && styles.activeTabText,
+                ]}
+              >
+                Settings
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {activeTab === "profile" ? (
+            <View style={styles.statsGrid}>
+              <View style={styles.statCard}>
+                <View style={styles.iconCircle}>
+                  <Ionicons name="trophy" size={24} color="#FFD700" />
+                </View>
+                <Text style={styles.statValue}>{stats.wins}</Text>
+                <Text style={styles.statLabel}>Wins</Text>
+              </View>
+              <View style={styles.statCard}>
+                <View style={styles.iconCircle}>
+                  <Ionicons name="game-controller" size={24} color="#4ECDC4" />
+                </View>
+                <Text style={styles.statValue}>{stats.totalGames}</Text>
+                <Text style={styles.statLabel}>Played</Text>
+              </View>
+              <View style={styles.statCard}>
+                <View style={styles.iconCircle}>
+                  <Ionicons name="star" size={24} color="#FF9F43" />
+                </View>
+                <Text style={styles.statValue}>{stats.score}</Text>
+                <Text style={styles.statLabel}>Total Score</Text>
               </View>
             </View>
           ) : (
-            <TouchableOpacity
-              style={styles.menuItem}
-              onPress={handleCheckUpdate}
-              disabled={isChecking}
-            >
-              {isChecking ? (
-                <ActivityIndicator size="small" color="#333" />
-              ) : (
-                <Ionicons
-                  name="cloud-download-outline"
-                  size={24}
-                  color="#333"
-                />
-              )}
-              <Text style={[styles.menuItemText, { color: "#333" }]}>
-                {isChecking ? "Checking..." : "Check for Updates"}
-              </Text>
-            </TouchableOpacity>
-          )}
+            <View style={styles.settingsContainer}>
+              <Text style={styles.inputLabel}>Avatar Color</Text>
+              <View style={styles.gradientSelector}>
+                {AVATAR_GRADIENTS.map((colors, index) => (
+                  <TouchableOpacity
+                    key={index}
+                    onPress={() => handleGradientSelect(index)}
+                  >
+                    <LinearGradient
+                      colors={colors}
+                      style={[
+                        styles.gradientOption,
+                        currentGradientIndex === index &&
+                          styles.selectedGradientOption,
+                      ]}
+                    >
+                      {currentGradientIndex === index && (
+                        <Ionicons name="checkmark" size={28} color="white" />
+                      )}
+                    </LinearGradient>
+                  </TouchableOpacity>
+                ))}
+              </View>
 
-          <TouchableOpacity style={styles.menuItem} onPress={handleSignOut}>
-            <Ionicons name="log-out-outline" size={24} color="#d32f2f" />
-            <Text style={styles.menuItemText}>Log Out</Text>
-          </TouchableOpacity>
-        </Animated.View>
-      </SafeAreaProvider>
-    </ImageBackground>
+              <Text style={styles.inputLabel}>Display Name</Text>
+              <View style={styles.inputGroup}>
+                <TextInput
+                  style={styles.input}
+                  value={displayName}
+                  onChangeText={setDisplayName}
+                  placeholder="Enter name"
+                  placeholderTextColor="#999"
+                />
+                <TouchableOpacity
+                  style={[styles.saveButton, { opacity: updating ? 0.7 : 1 }]}
+                  onPress={handleUpdateProfile}
+                  disabled={updating}
+                >
+                  {updating ? (
+                    <ActivityIndicator color="white" />
+                  ) : (
+                    <Text style={styles.saveButtonText}>Save</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.divider} />
+
+              <TouchableOpacity
+                style={styles.settingItem}
+                onPress={checkForUpdates}
+              >
+                <View style={styles.settingInfo}>
+                  <Ionicons
+                    name="cloud-download-outline"
+                    size={22}
+                    color="white"
+                  />
+                  <Text style={styles.settingText}>Software Update</Text>
+                </View>
+                {checkingUpdate ? (
+                  <ActivityIndicator size="small" color="#FF6B6B" />
+                ) : (
+                  <Text style={styles.versionText}>v{currentAppVersion}</Text>
+                )}
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.logoutItem]}
+                onPress={handleLogout}
+              >
+                <View style={styles.settingInfo}>
+                  <Ionicons name="log-out-outline" size={22} color="#FF6B6B" />
+                  <Text style={[styles.settingText, { color: "#FF6B6B" }]}>
+                    Logout
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            </View>
+          )}
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "rgba(255, 255, 255, 0.5)",
+    backgroundColor: "#000000a3",
   },
-  backgroundImage: { flex: 1 },
+  backgroundImage: {
+    ...StyleSheet.absoluteFillObject,
+    resizeMode: "cover",
+    opacity: 0.6,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  centered: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#ffffff",
+  },
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
+    paddingTop: 60,
     paddingHorizontal: 20,
-    paddingTop: 50,
+    paddingBottom: 20,
   },
-  headerButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
+  backButton: { width: 40, height: 40, justifyContent: "center" },
+  headerTitle: {
+    fontSize: 22,
+    fontWeight: "900",
+    color: "white",
+    letterSpacing: 1,
   },
-  headerButtonText: {
-    fontSize: 18,
-    fontWeight: "bold",
-    color: "#333",
-  },
-  card: {
-    backgroundColor: "transparent",
-    borderRadius: 20,
-    padding: 30,
-    alignItems: "center",
+  scrollContent: { paddingBottom: 40 },
+  profileHeader: { alignItems: "center", marginTop: 10, marginBottom: 30 },
+  avatarContainer: {
+    width: 110,
+    height: 110,
+    borderRadius: 55,
     justifyContent: "center",
-    width: "100%",
-    maxWidth: 400,
-    alignSelf: "center",
-    marginTop: 40,
+    alignItems: "center",
+    marginBottom: 15,
+    borderWidth: 4,
+    borderColor: "rgba(255, 255, 255, 0)",
+    elevation: 10,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.6,
+    shadowRadius: 5,
   },
-  avatar: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    backgroundColor: "#333",
+  avatarText: { fontSize: 44, fontWeight: "bold", color: "#333" },
+  userName: {
+    fontSize: 26,
+    fontWeight: "bold",
+    color: "white",
+    marginBottom: 5,
+  },
+  userEmail: { fontSize: 14, color: "rgba(255, 255, 255, 0.64)" },
+  tabContainer: {
+    flexDirection: "row",
+    backgroundColor: "rgba(255,255,255,0.1)",
+    marginHorizontal: 25,
+    borderRadius: 20,
+    padding: 5,
+    marginBottom: 25,
+  },
+  tab: { flex: 1, paddingVertical: 12, alignItems: "center", borderRadius: 15 },
+  activeTab: { backgroundColor: "#ff861c" },
+  tabText: {
+    color: "rgba(255, 255, 255, 0.71)",
+    fontWeight: "700",
+    fontSize: 15,
+  },
+  activeTabText: { color: "#333", fontWeight: "800" },
+  statsGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "space-between",
+    paddingHorizontal: 25,
+  },
+  statCard: {
+    width: "48%",
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderRadius: 20,
+    padding: 20,
+    alignItems: "center",
+    marginBottom: 15,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.1)",
+  },
+  iconCircle: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: "rgba(255,255,255,0.05)",
     justifyContent: "center",
     alignItems: "center",
     marginBottom: 10,
-    position: "relative",
+  },
+  statValue: { fontSize: 24, fontWeight: "800", color: "#eeeeee" },
+  statLabel: {
+    fontSize: 16,
+    color: "rgba(255,255,255,0.5)",
+    marginTop: 2,
+    fontWeight: "600",
+  },
+  gradientSelector: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "space-between",
+    marginBottom: 25,
+  },
+  gradientOption: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    marginBottom: 10,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  selectedGradientOption: {
     borderWidth: 3,
     borderColor: "white",
-    boxShadow: "0px 2px 4px rgba(0,0,0,0.3)",
-    elevation: 5,
+    borderRadius: 33,
   },
-  avatarImage: {
-    width: "100%",
-    height: "100%",
-    borderRadius: 50,
-  },
-  avatarText: { fontSize: 40, fontWeight: "bold", color: "#fffdf6ff" },
-  editBadge: {
-    position: "absolute",
-    bottom: 0,
-    right: 0,
-    backgroundColor: "#4F46E5",
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 2,
-    borderColor: "white",
-  },
-  username: {
-    fontSize: 30,
-    fontWeight: "bold",
-    color: "#333",
-    textAlign: "center",
-  },
-  email: {
-    fontSize: 20,
-    fontWeight: "400",
-    color: "black",
-    marginBottom: 20,
-    textAlign: "center",
-  },
-  divider: {
-    height: 2,
-    width: "100%",
-    backgroundColor: "#333",
-    marginVertical: 20,
-  },
-  button: {
-    width: "100%",
-    padding: 15,
-    borderRadius: 10,
-    backgroundColor: "#f0f0f0",
+  settingsContainer: { paddingHorizontal: 25 },
+  inputLabel: {
+    color: "rgba(255, 255, 255, 0.71)",
     marginBottom: 10,
-    alignItems: "center",
-    borderColor: "#333",
-    borderWidth: 2,
-  },
-  buttonText: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: "600",
-    color: "#333",
-    textTransform: "uppercase",
   },
-  backdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.3)",
-    zIndex: 10,
-  },
-  settingsPanel: {
-    position: "absolute",
-    right: 0,
-    top: 0,
-    bottom: 0,
-    width: 250,
-    backgroundColor: "#e0e0e0",
-    zIndex: 20,
-    padding: 20,
-    paddingTop: 60,
-    boxShadow: "-2px 0px 5px rgba(0,0,0,0.2)",
-    elevation: 5,
-  },
-  settingsTitle: {
-    fontSize: 24,
-    fontWeight: "bold",
-    color: "#333",
-    marginBottom: 10,
-  },
-  menuItem: {
+  inputGroup: {
+    marginBottom: 25,
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    paddingVertical: 15,
+    justifyContent: "space-between",
   },
-  menuItemText: {
+  input: {
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderRadius: 15,
+    padding: 12,
+    color: "white",
     fontSize: 16,
-    color: "#333",
-    fontWeight: "600",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.1)",
+    width: "73%",
+    height: 50,
   },
-  downloadContainer: {
+  saveButton: {
+    backgroundColor: "#00ffee",
     paddingVertical: 15,
+    borderRadius: 15,
+    alignItems: "center",
+    shadowColor: "#4ECDC4",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 5,
+    width: "25%",
+    height: 50,
+    justifyContent: "center",
+    elevation: 10,
   },
-  downloadText: {
-    color: "#333",
-    marginBottom: 5,
+  saveButtonText: { color: "#333", fontWeight: "800", fontSize: 16 },
+  divider: {
+    height: 1,
+    backgroundColor: "rgba(255,255,255,0.3)",
+    marginVertical: 15,
+  },
+  settingItem: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255,255,255,0.05)",
+  },
+  settingInfo: { flexDirection: "row", alignItems: "center" },
+  settingText: {
+    color: "white",
+    fontSize: 16,
+    marginLeft: 15,
     fontWeight: "600",
+  },
+  versionText: {
+    color: "rgba(255,255,255,0.6)",
     fontSize: 14,
+    fontWeight: "500",
   },
-  progressBar: {
-    height: 8,
-    backgroundColor: "#999",
-    borderRadius: 4,
-    overflow: "hidden",
-  },
-  progressFill: {
-    height: "100%",
-    backgroundColor: "#4F46E5",
+  logoutItem: {
+    marginTop: 5,
+    marginBottom: 30,
+    backgroundColor: "rgba(255, 107, 107, 0.25)",
+    borderRadius: 15,
+    paddingHorizontal: 0,
+    paddingVertical: 10,
+    width: "35%",
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#FF6B6B",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    elevation: 15,
   },
 });

@@ -1,13 +1,22 @@
+import GRADIENTS from "@/data/gradients";
+import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useRouter } from "expo-router";
+import { LinearGradient } from "expo-linear-gradient";
+import { usePathname, useRouter } from "expo-router";
 import { onAuthStateChanged, User } from "firebase/auth";
 import {
   arrayRemove,
+  arrayUnion,
+  collection,
+  deleteDoc,
   doc,
   getDoc,
+  getDocs,
   onSnapshot,
+  query,
   setDoc,
   updateDoc,
+  where,
 } from "firebase/firestore";
 import React, { useEffect, useState } from "react";
 import {
@@ -23,25 +32,30 @@ import {
   View,
 } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
+import WELCOME_TEXT from "../data/welcomePhrases";
 import { auth, db } from "../firebaseConfig";
 // Generate numbers 1-20 for the wheel
 const ROUND_OPTIONS = Array.from({ length: 20 }, (_, i) => i + 1);
 
-const WELCOME_PHRASES = [
-  "Welcome, {name}!",
-  "Ready to draw, {name}?",
-  "Let's get creative, {name}!",
-  "Time to guess, {name}!",
-  "Show us your skills, {name}!",
-  "Hey {name}, let's play!",
-  "Good to see you, {name}!",
-  "Get ready to scribble, {name}!",
-  "Draw. Guess. Win. Right, {name}?",
-  "Your turn to shine, {name}!",
-];
+const WELCOME_PHRASES = WELCOME_TEXT;
+
+const AVATAR_GRADIENTS = GRADIENTS; // Reuse the same gradients for avatars
+
+const getAvatarGradient = (uid: string): [string, string, ...string[]] => {
+  let hash = 0;
+  for (let i = 0; i < uid.length; i++) {
+    hash = uid.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return AVATAR_GRADIENTS[Math.abs(hash) % AVATAR_GRADIENTS.length] as [
+    string,
+    string,
+    ...string[],
+  ];
+};
 
 export default function Index() {
   const router = useRouter();
+  const pathname = usePathname();
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [roomCode, setRoomCode] = useState("");
@@ -55,6 +69,11 @@ export default function Index() {
   const [useCustomInput, setUseCustomInput] = useState(false);
   const [hasSeenOnboarding, setHasSeenOnboarding] = useState(false);
   const [gameInvite, setGameInvite] = useState<any>(null);
+  const [friendsPreview, setFriendsPreview] = useState<any[]>([]);
+  const [friendCount, setFriendCount] = useState(0);
+  const [activeGameId, setActiveGameId] = useState<string | null>(null);
+  const [activeGamePlayers, setActiveGamePlayers] = useState<any[]>([]);
+  const [avatarGradientIndex, setAvatarGradientIndex] = useState<number>(-1);
 
   useEffect(() => {
     setGreetingTemplate(
@@ -112,10 +131,69 @@ export default function Index() {
         } else {
           setGameInvite(null);
         }
+
+        // Friends Preview
+        const fIds = data.friends || [];
+        setFriendCount(fIds.length);
+        fetchTopFriends(fIds);
+
+        if (data.avatarGradientIndex !== undefined) {
+          setAvatarGradientIndex(data.avatarGradientIndex);
+        }
       }
     });
     return () => unsub();
   }, [user]);
+
+  // Listen to active game (Waiting Group)
+  useEffect(() => {
+    if (!activeGameId) return;
+    const unsub = onSnapshot(
+      doc(db, "games", activeGameId),
+      async (docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+
+          // Auto-navigate if game starts
+          if (data.status === "playing" && pathname === "/") {
+            router.push(`/game/${activeGameId}`);
+            setActiveGameId(null);
+            return;
+          }
+
+          const pIds = data.players || [];
+          if (pIds.length > 0) {
+            const usersRef = collection(db, "users");
+            const q = query(
+              usersRef,
+              where("__name__", "in", pIds.slice(0, 10)),
+            );
+            const snap = await getDocs(q);
+            const pData = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+            setActiveGamePlayers(pData);
+          }
+        }
+      },
+    );
+    return () => unsub();
+  }, [activeGameId, pathname]);
+
+  const fetchTopFriends = async (allFriendIds: string[]) => {
+    if (allFriendIds.length === 0) {
+      setFriendsPreview([]);
+      return;
+    }
+    const idsToFetch = allFriendIds.slice(0, 4);
+    try {
+      const usersRef = collection(db, "users");
+      const q = query(usersRef, where("__name__", "in", idsToFetch));
+      const snap = await getDocs(q);
+      const friendsData = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      setFriendsPreview(friendsData);
+    } catch (e) {
+      console.error("Error fetching friends preview", e);
+    }
+  };
 
   const handleAcceptInvite = async () => {
     if (!gameInvite || !user) return;
@@ -138,6 +216,60 @@ export default function Index() {
       gameInvites: arrayRemove(gameInvite),
     });
     setGameInvite(null);
+  };
+
+  const handleQuickInvite = async (friendId: string) => {
+    try {
+      let gameId = activeGameId;
+      if (!gameId) {
+        gameId = Math.random().toString(36).substring(2, 6).toUpperCase();
+        await setDoc(doc(db, "games", gameId), {
+          status: "waiting",
+          currentDrawer: user!.uid,
+          currentWord: "",
+          round: 1,
+          maxRounds: 3,
+          scores: { [user!.uid]: 0 },
+          players: [user!.uid],
+          hostId: user!.uid,
+          guesses: [],
+          createdAt: Date.now(),
+        });
+        setActiveGameId(gameId);
+      }
+
+      await updateDoc(doc(db, "users", friendId), {
+        gameInvites: arrayUnion({
+          roomId: gameId,
+          inviterName: username,
+          timestamp: Date.now(),
+        }),
+      });
+      Alert.alert("Invite Sent", "Friend invited to join!");
+    } catch (e) {
+      console.error("Quick invite failed", e);
+      Alert.alert("Error", "Failed to send invite");
+    }
+  };
+
+  const handleCancelGame = async () => {
+    if (!activeGameId) return;
+    Alert.alert("Cancel Game", "Stop waiting and delete this room?", [
+      { text: "Keep Waiting", style: "cancel" },
+      {
+        text: "Delete Room",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await deleteDoc(doc(db, "games", activeGameId));
+            setActiveGameId(null);
+            setActiveGamePlayers([]);
+          } catch (e) {
+            Alert.alert("Error", "Could not delete room");
+          }
+        },
+      },
+    ]);
   };
 
   // 2. Navigation Functions
@@ -212,15 +344,31 @@ export default function Index() {
               {greetingTemplate.replace("{name}", username)}
             </Text>
             <TouchableOpacity onPress={() => router.push("/profile")}>
-              <View style={styles.profileIcon}>
+              <LinearGradient
+                colors={
+                  (avatarGradientIndex >= 0 &&
+                  avatarGradientIndex < AVATAR_GRADIENTS.length
+                    ? AVATAR_GRADIENTS[avatarGradientIndex]
+                    : getAvatarGradient(user.uid)) as [
+                    string,
+                    string,
+                    ...string[],
+                  ]
+                }
+                style={styles.profileIcon}
+              >
                 <Text style={styles.profileIconText}>
                   {username[0]?.toUpperCase() || "U"}
                 </Text>
-              </View>
+              </LinearGradient>
             </TouchableOpacity>
           </View>
 
-          <View style={styles.content}>
+          <ScrollView
+            style={{ flex: 1 }}
+            contentContainerStyle={styles.scrollContent}
+            showsVerticalScrollIndicator={false}
+          >
             <Text style={styles.title}>Scribbles</Text>
 
             <View style={styles.card}>
@@ -247,7 +395,107 @@ export default function Index() {
                 <Text style={styles.buttonTextSecondary}>Create New Room</Text>
               </TouchableOpacity>
             </View>
-          </View>
+
+            {/* Waiting Group Panel */}
+            {activeGameId && (
+              <View style={styles.waitingGroupPanel}>
+                <Text style={styles.waitingTitle}>Lobby: {activeGameId}</Text>
+                <Text style={styles.waitingSubtitle}>
+                  Waiting for players...
+                </Text>
+                <View style={styles.waitingAvatars}>
+                  {activeGamePlayers.map((p) => (
+                    <View key={p.id} style={styles.waitingAvatarContainer}>
+                      <LinearGradient
+                        colors={
+                          (p.avatarGradientIndex !== undefined &&
+                          p.avatarGradientIndex >= 0 &&
+                          p.avatarGradientIndex < AVATAR_GRADIENTS.length
+                            ? AVATAR_GRADIENTS[p.avatarGradientIndex]
+                            : getAvatarGradient(p.id)) as [
+                            string,
+                            string,
+                            ...string[],
+                          ]
+                        }
+                        style={styles.waitingAvatar}
+                      >
+                        <Text style={styles.waitingAvatarText}>
+                          {p.username?.[0]?.toUpperCase()}
+                        </Text>
+                      </LinearGradient>
+                      <Text style={styles.waitingName} numberOfLines={1}>
+                        {p.username}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+                <View style={styles.waitingBtnRow}>
+                  <TouchableOpacity
+                    style={styles.cancelGameBtn}
+                    onPress={handleCancelGame}
+                  >
+                    <Text style={styles.cancelGameText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.enterGameBtn}
+                    onPress={() => router.push(`/game/${activeGameId}`)}
+                  >
+                    <Text style={styles.enterGameText}>Enter Game</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+
+            {/* Friends Panel */}
+            <View style={styles.friendsPanel}>
+              <View style={styles.friendsHeader}>
+                <Text style={styles.friendsTitle}>Friends</Text>
+              </View>
+              <View style={styles.friendsListVertical}>
+                {friendsPreview.slice(0, 4).map((friend) => (
+                  <View key={friend.id} style={styles.friendRow}>
+                    <View style={styles.friendInfo}>
+                      <LinearGradient
+                        colors={
+                          (friend.avatarGradientIndex !== undefined &&
+                          friend.avatarGradientIndex >= 0 &&
+                          friend.avatarGradientIndex < AVATAR_GRADIENTS.length
+                            ? AVATAR_GRADIENTS[friend.avatarGradientIndex]
+                            : getAvatarGradient(friend.id)) as [
+                            string,
+                            string,
+                            ...string[],
+                          ]
+                        }
+                        style={styles.friendAvatarSmall}
+                      >
+                        <Text style={styles.friendAvatarTextSmall}>
+                          {friend.username?.[0]?.toUpperCase()}
+                        </Text>
+                      </LinearGradient>
+                      <Text style={styles.friendName}>{friend.username}</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.quickInviteBtn}
+                      onPress={() => handleQuickInvite(friend.id)}
+                    >
+                      <Text style={styles.quickInviteText}>Invite</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+              {friendCount > 0 && (
+                <TouchableOpacity
+                  style={styles.seeAllBtn}
+                  onPress={() => router.push("/friends")}
+                >
+                  <Text style={styles.seeAllText}>View All Friends</Text>
+                  <Ionicons name="chevron-down" size={20} color="#ffffff" />
+                </TouchableOpacity>
+              )}
+            </View>
+          </ScrollView>
 
           {/* Round Selection Modal */}
           <Modal
@@ -377,8 +625,6 @@ export default function Index() {
       <SafeAreaProvider style={styles.containerTransparent}>
         <View style={styles.content}>
           <Text style={styles.title}>Scribbles</Text>
-          <Text style={styles.subtitle}>Draw. Guess. Win.</Text>
-
           <TouchableOpacity
             style={styles.buttonPrimary}
             onPress={() => router.push("/auth/login")}
@@ -417,7 +663,7 @@ const styles = StyleSheet.create({
     color: "white",
     fontSize: 18,
     fontWeight: "bold",
-    backgroundColor: "rgba(0, 0, 0, 0.7)",
+    backgroundColor: "rgba(0, 0, 0, 0.1)",
     padding: 8,
     borderRadius: 10,
     marginLeft: 5,
@@ -426,12 +672,12 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 40,
-    backgroundColor: "#ffeeeeff",
     justifyContent: "center",
     alignItems: "center",
   },
   profileIconText: { color: "#333", fontWeight: "bold", fontSize: 22 },
   content: { flex: 1, justifyContent: "center", padding: 20 },
+  scrollContent: { padding: 10, paddingBottom: 50 },
   title: {
     fontSize: 64,
     fontWeight: "bold",
@@ -440,20 +686,14 @@ const styles = StyleSheet.create({
     textShadowOffset: { width: -1, height: 1 },
     textShadowRadius: 10,
     textAlign: "center",
-    marginBottom: 10,
-  },
-  subtitle: {
-    fontSize: 18,
-    fontWeight: "bold",
-    color: "rgba(0, 0, 0, 0.8)",
-    textAlign: "center",
-    marginBottom: 40,
+    marginBottom: 5,
   },
   card: {
     backgroundColor: "#dddddd95",
     borderRadius: 20,
     padding: 30,
     elevation: 8,
+    marginBottom: 20,
   },
   label: { fontSize: 18, fontWeight: "900", marginBottom: 10, color: "black" },
   input: {
@@ -580,4 +820,102 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   confirmText: { color: "white", fontWeight: "bold" },
+
+  // Friends Panel
+  friendsPanel: {
+    backgroundColor: "#dddddd95",
+    borderRadius: 20,
+    padding: 20,
+    elevation: 8,
+  },
+  friendsHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 15,
+  },
+  friendsTitle: { fontSize: 18, fontWeight: "bold", color: "#ffffff" },
+  friendsListVertical: { gap: 10 },
+  friendRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#fff",
+    padding: 10,
+    borderRadius: 12,
+  },
+  friendInfo: { flexDirection: "row", alignItems: "center", gap: 10 },
+  friendAvatarSmall: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  friendAvatarTextSmall: { color: "#333", fontWeight: "bold", fontSize: 16 },
+  friendName: { fontSize: 16, fontWeight: "600", color: "#333" },
+  quickInviteBtn: {
+    backgroundColor: "#4a90e2",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  quickInviteText: { color: "white", fontWeight: "bold", fontSize: 12 },
+  seeAllBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 15,
+    gap: 5,
+  },
+  seeAllText: { color: "#ffffff", fontSize: 14, fontWeight: "600" },
+
+  // Waiting Group Panel
+  waitingGroupPanel: {
+    backgroundColor: "#fff",
+    borderRadius: 20,
+    padding: 20,
+    marginBottom: 20,
+    elevation: 8,
+  },
+  waitingTitle: { fontSize: 18, fontWeight: "bold", color: "#333" },
+  waitingSubtitle: { fontSize: 14, color: "#666", marginBottom: 15 },
+  waitingAvatars: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 15,
+    marginBottom: 20,
+  },
+  waitingAvatarContainer: { alignItems: "center", width: 60 },
+  waitingAvatar: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 5,
+  },
+  waitingAvatarText: { fontSize: 20, fontWeight: "bold", color: "#333" },
+  waitingName: { fontSize: 12, color: "#333", textAlign: "center" },
+  waitingBtnRow: { flexDirection: "row", gap: 10 },
+  enterGameBtn: {
+    flex: 1,
+    backgroundColor: "#4338CA",
+    padding: 15,
+    borderRadius: 12,
+    alignItems: "center",
+  },
+  enterGameText: { color: "white", fontWeight: "bold", fontSize: 16 },
+  cancelGameBtn: {
+    flex: 1,
+    backgroundColor: "#fee2e2",
+    padding: 15,
+    borderRadius: 12,
+    alignItems: "center",
+  },
+  cancelGameText: {
+    color: "#991b1b",
+    fontWeight: "bold",
+    fontSize: 16,
+  },
 });

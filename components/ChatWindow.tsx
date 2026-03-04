@@ -1,3 +1,4 @@
+import { Ionicons } from "@expo/vector-icons";
 import {
   addDoc,
   collection,
@@ -8,8 +9,11 @@ import {
 } from "firebase/firestore";
 import React, { useEffect, useRef, useState } from "react";
 import {
+  Animated,
   FlatList,
+  Keyboard,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   StyleProp,
   StyleSheet,
@@ -46,7 +50,66 @@ interface ChatProps {
   isDrawer: boolean;
   guesses: string[];
   onCorrectGuess: (userId: string) => Promise<void>;
+  avoidKeyboard?: boolean;
 }
+
+const FadingMessage = ({
+  item,
+  rowStyle,
+  nameStyle,
+  textStyle,
+}: {
+  item: ChatMessage;
+  rowStyle: StyleProp<ViewStyle>;
+  nameStyle: StyleProp<TextStyle>;
+  textStyle: StyleProp<TextStyle>;
+}) => {
+  const [measuredHeight, setMeasuredHeight] = useState<number | null>(null);
+  const opacityAnim = useRef(new Animated.Value(1)).current;
+  const heightAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (measuredHeight !== null) {
+      heightAnim.setValue(measuredHeight);
+      Animated.sequence([
+        Animated.delay(30000),
+        Animated.parallel([
+          Animated.timing(opacityAnim, {
+            toValue: 0,
+            duration: 500,
+            useNativeDriver: false, // Height does not support native driver
+          }),
+          Animated.timing(heightAnim, {
+            toValue: 0,
+            duration: 500,
+            useNativeDriver: false,
+          }),
+        ]),
+      ]).start();
+    }
+  }, [measuredHeight]);
+
+  return (
+    <Animated.View
+      onLayout={(e) => {
+        if (measuredHeight === null) {
+          setMeasuredHeight(e.nativeEvent.layout.height);
+        }
+      }}
+      style={[
+        rowStyle,
+        {
+          opacity: opacityAnim,
+          height: measuredHeight !== null ? heightAnim : undefined,
+          overflow: "hidden",
+        },
+      ]}
+    >
+      <Text style={nameStyle}>{item.userName}:</Text>
+      <Text style={textStyle}>{item.text}</Text>
+    </Animated.View>
+  );
+};
 
 const getLevenshteinDistance = (a: string, b: string) => {
   const matrix = [];
@@ -74,9 +137,11 @@ export default function ChatWindow({
   isDrawer,
   guesses,
   onCorrectGuess,
+  avoidKeyboard = true,
 }: ChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState("");
+  const [historyVisible, setHistoryVisible] = useState(false);
   const flatListRef = useRef<FlatList>(null);
 
   useEffect(() => {
@@ -99,6 +164,14 @@ export default function ChatWindow({
 
     return () => unsubscribe();
   }, [gameId]);
+
+  // Scroll to bottom when keyboard opens to keep latest messages visible
+  useEffect(() => {
+    const kbdShow = Keyboard.addListener("keyboardDidShow", () => {
+      flatListRef.current?.scrollToEnd({ animated: true });
+    });
+    return () => kbdShow.remove();
+  }, []);
 
   const handleSend = async () => {
     if (!inputText.trim() || !currentUser) return;
@@ -155,7 +228,7 @@ export default function ChatWindow({
     setInputText("");
   };
 
-  const renderItem = ({ item }: { item: ChatMessage }) => {
+  const getMessageStyles = (item: ChatMessage) => {
     const isCorrect = item.isCorrectGuess;
     const isClose = item.isCloseGuess;
     const isSystem = item.isSystem;
@@ -193,9 +266,25 @@ export default function ChatWindow({
         nameStyle = [styles.userName, styles.systemText];
       }
     }
+    return { rowStyle, textStyle, nameStyle };
+  };
 
+  const renderItem = ({ item }: { item: ChatMessage }) => {
+    const { rowStyle, textStyle, nameStyle } = getMessageStyles(item);
     return (
-      <View style={rowStyle}>
+      <FadingMessage
+        item={item}
+        rowStyle={rowStyle}
+        nameStyle={nameStyle}
+        textStyle={textStyle}
+      />
+    );
+  };
+
+  const renderHistoryItem = ({ item }: { item: ChatMessage }) => {
+    const { rowStyle, textStyle, nameStyle } = getMessageStyles(item);
+    return (
+      <View style={[rowStyle, { marginBottom: 8 }]}>
         <Text style={nameStyle}>{item.userName}:</Text>
         <Text style={textStyle}>{item.text}</Text>
       </View>
@@ -204,20 +293,19 @@ export default function ChatWindow({
 
   return (
     <KeyboardAvoidingView
+      enabled={avoidKeyboard}
       behavior={Platform.OS === "ios" ? "padding" : "height"}
-      keyboardVerticalOffset={Platform.OS === "ios" ? 100 : 0}
+      keyboardVerticalOffset={Platform.OS === "ios" ? 100 : 100}
       style={styles.container}
+      pointerEvents="box-none"
     >
-      <FlatList
-        ref={flatListRef}
-        data={messages}
-        renderItem={renderItem}
-        keyExtractor={(item) => item.id}
-        style={styles.list}
-        contentContainerStyle={styles.listContent}
-      />
-
-      <View style={styles.inputContainer}>
+      <View style={styles.inputContainer} pointerEvents="auto">
+        <TouchableOpacity
+          style={styles.historyButton}
+          onPress={() => setHistoryVisible(true)}
+        >
+          <Ionicons name="time" size={36} color="#555" />
+        </TouchableOpacity>
         <TextInput
           style={styles.input}
           value={inputText}
@@ -229,9 +317,51 @@ export default function ChatWindow({
           onSubmitEditing={handleSend}
         />
         <TouchableOpacity onPress={handleSend} style={styles.sendButton}>
-          <Text style={styles.sendText}>Send</Text>
+          {/* <Text style={styles.sendText}>Send</Text> */}
+          <Text style={styles.sendText}>➤</Text>
         </TouchableOpacity>
       </View>
+      <FlatList
+        ref={flatListRef}
+        data={messages.slice(-5)}
+        renderItem={renderItem}
+        keyExtractor={(item) => item.id}
+        style={styles.list}
+        contentContainerStyle={styles.listContent}
+        pointerEvents="box-none"
+      />
+
+      <Modal
+        visible={historyVisible}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setHistoryVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <TouchableOpacity
+            style={styles.modalBackdrop}
+            activeOpacity={1}
+            onPress={() => setHistoryVisible(false)}
+          />
+          <View style={styles.historyPanel}>
+            <View style={styles.historyHeader}>
+              <Text style={styles.historyTitle}>Chat History</Text>
+              <TouchableOpacity onPress={() => setHistoryVisible(false)}>
+                <View style={styles.closeButton}>
+                  <Ionicons name="close" size={24} color="#333" />
+                </View>
+              </TouchableOpacity>
+            </View>
+            <FlatList
+              data={messages}
+              renderItem={renderHistoryItem}
+              keyExtractor={(item) => item.id}
+              contentContainerStyle={styles.historyContent}
+              showsVerticalScrollIndicator={false}
+            />
+          </View>
+        </View>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -239,17 +369,20 @@ export default function ChatWindow({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "white",
+    backgroundColor: "ffffff00",
+    borderRadius: 0,
   },
   list: {
     flex: 1,
+    backgroundColor: "#ffffff00",
+    paddingBottom: 30,
   },
   listContent: {
     padding: 10,
   },
   messageRow: {
     flexDirection: "row",
-    marginBottom: 6,
+    marginBottom: 2,
     flexWrap: "wrap",
   },
   userName: {
@@ -309,9 +442,15 @@ const styles = StyleSheet.create({
   inputContainer: {
     flexDirection: "row",
     padding: 10,
-    borderTopWidth: 1,
-    borderTopColor: "#101010",
+    borderBottomWidth: 2,
+    borderBottomColor: "#101010",
     alignItems: "center",
+  },
+  historyButton: {
+    marginRight: 8,
+    padding: 2,
+    backgroundColor: "#a7a7a789",
+    borderRadius: 20,
   },
   input: {
     flex: 1,
@@ -334,6 +473,48 @@ const styles = StyleSheet.create({
   sendText: {
     color: "white",
     fontWeight: "800",
-    fontSize: 16,
+    fontSize: 18,
+    transform: [{ rotate: "-45deg" }, { translateX: 1 }, { translateY: -1 }],
+  },
+  modalOverlay: {
+    flex: 1,
+    justifyContent: "flex-end",
+  },
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.3)",
+  },
+  historyPanel: {
+    backgroundColor: "white",
+    height: "70%",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 16,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 5,
+    paddingBottom: 0,
+  },
+  historyHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 16,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: "#eee",
+  },
+  closeButton: {
+    padding: 5,
+  },
+  historyTitle: {
+    fontSize: 18,
+    fontWeight: "bold",
+    color: "#333",
+  },
+  historyContent: {
+    paddingBottom: 20,
   },
 });

@@ -33,7 +33,7 @@ export default function Register() {
       const userCredential = await createUserWithEmailAndPassword(
         auth,
         email,
-        password
+        password,
       );
       const user = userCredential.user;
 
@@ -119,7 +119,7 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     padding: 20,
-    backgroundColor: "rgba(255, 254, 241, 0.7)",
+    backgroundColor: "rgba(255, 255, 255, 0.25)",
   },
   title: {
     fontSize: 32,

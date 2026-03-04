@@ -76,12 +76,12 @@ export default function Login() {
           <Text style={styles.linkText}>Don't have an account? Sign Up</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity
+        {/* <TouchableOpacity
           onPress={() => router.back()}
           style={styles.linkButton}
         >
           <Text style={styles.linkText}>Cancel</Text>
-        </TouchableOpacity>
+        </TouchableOpacity> */}
       </View>
     </ImageBackground>
   );
@@ -93,12 +93,12 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     padding: 20,
-    backgroundColor: "rgba(255, 255, 255, 0)", // Semi-transparent overlay
+    backgroundColor: "rgba(255, 255, 255, 0.29)",
   },
   title: {
     fontSize: 40,
     fontWeight: "bold",
-    color: "#0004ffff",
+    color: "#000",
     marginBottom: 30,
     textAlign: "center",
   },
@@ -120,10 +120,10 @@ const styles = StyleSheet.create({
   buttonText: { color: "white", fontWeight: "bold", fontSize: 16 },
   linkButton: { marginTop: 20, alignItems: "center", marginBottom: 5 },
   linkText: {
-    color: "blue",
+    color: "#000",
     opacity: 1,
     fontSize: 18,
     fontWeight: "bold",
-    textDecorationLine: "underline",
+    textDecorationLine: "none",
   },
 });

@@ -19,6 +19,7 @@ import {
   Alert,
   Animated,
   Easing,
+  Keyboard,
   StyleSheet,
   Text,
   TextInput,
@@ -70,6 +71,15 @@ export default function GameRoom() {
   const [playersList, setPlayersList] = useState<any[]>([]);
   const [showLobbyVisible, setShowLobbyVisible] = useState(false);
   const [showInviteModal, setShowInviteModal] = useState(false);
+  const [isKeyboardVisible, setKeyboardVisible] = useState(false);
+  const [showDrawingTools, setShowDrawingTools] = useState(false);
+  const [isDrawing, setIsDrawing] = useState(false);
+
+  // Round animation state
+  const [lastSeenRound, setLastSeenRound] = useState<number>(0);
+  const [roundAlertText, setRoundAlertText] = useState("");
+  const roundAlertOpacity = useRef(new Animated.Value(0)).current;
+  const roundAlertScale = useRef(new Animated.Value(0.5)).current;
 
   const TOTAL_ROUNDS_FALLBACK = 5; // fallback rounds if none provided
   const slideAnim = useRef(new Animated.Value(0)).current; // 0 closed, 1 open
@@ -83,11 +93,82 @@ export default function GameRoom() {
     }).start();
   }, [showPlayersMenu, slideAnim]);
 
+  // Listen for keyboard visibility to adjust layout
+  useEffect(() => {
+    const showSub = Keyboard.addListener("keyboardDidShow", () =>
+      setKeyboardVisible(true),
+    );
+    const hideSub = Keyboard.addListener("keyboardDidHide", () =>
+      setKeyboardVisible(false),
+    );
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
   // control lobby visibility based on game status
   useEffect(() => {
     if (gameData?.status === "waiting") setShowLobbyVisible(true);
     else setShowLobbyVisible(false);
   }, [gameData?.status]);
+
+  // Round change animation
+  useEffect(() => {
+    if (!gameData) return;
+    const currentRound = gameData.round;
+    const maxRounds = gameData.maxRounds || TOTAL_ROUNDS_FALLBACK;
+
+    if (lastSeenRound === 0) {
+      setLastSeenRound(currentRound);
+      return;
+    }
+
+    if (currentRound > lastSeenRound) {
+      if (maxRounds > 1) {
+        const text =
+          currentRound === maxRounds
+            ? "LAST ROUND STARTED!"
+            : `ROUND ${currentRound} STARTED!`;
+        setRoundAlertText(text);
+
+        roundAlertOpacity.setValue(0);
+        roundAlertScale.setValue(0.5);
+
+        Animated.sequence([
+          Animated.parallel([
+            Animated.timing(roundAlertOpacity, {
+              toValue: 1,
+              duration: 500,
+              useNativeDriver: true,
+              easing: Easing.out(Easing.back(1.5)),
+            }),
+            Animated.timing(roundAlertScale, {
+              toValue: 1,
+              duration: 500,
+              useNativeDriver: true,
+              easing: Easing.out(Easing.back(1.5)),
+            }),
+          ]),
+          Animated.delay(2000),
+          Animated.timing(roundAlertOpacity, {
+            toValue: 0,
+            duration: 500,
+            useNativeDriver: true,
+          }),
+        ]).start(() => {
+          setRoundAlertText("");
+        });
+      }
+      setLastSeenRound(currentRound);
+    }
+  }, [gameData?.round, lastSeenRound]);
+
+  useEffect(() => {
+    // When a new word is set (new turn starts), hide the tools by default
+    // so the drawer has to open them.
+    setShowDrawingTools(false);
+  }, [gameData?.word]);
 
   const userId = auth.currentUser?.uid;
 
@@ -253,6 +334,32 @@ export default function GameRoom() {
           if (!snap.exists()) return;
           const data = snap.data() as any;
 
+          // If the timer was updated by another client (it's in the future), abort.
+          // We add a small buffer (2s) for clock skew.
+          if (data.roundEndTimestamp > Date.now() + 2000) return;
+
+          // 1. Word Selection Phase Timeout
+          // If word is not selected yet, pick a random word and give time to draw.
+          if (!data.word) {
+            const pool =
+              WORDS_POOL && WORDS_POOL.length > 0
+                ? WORDS_POOL
+                : ["APPLE", "BANANA", "CAT"];
+            const randomWord =
+              pool[Math.floor(Math.random() * pool.length)].toUpperCase();
+            const drawingRoundEnd = Date.now() + 120000; // 2 mins to draw
+            tx.update(gameRef, {
+              word: randomWord,
+              currentWord: randomWord,
+              roundEndTimestamp: drawingRoundEnd,
+              guessed: [],
+            });
+            return;
+          }
+
+          // 2. Drawing Phase Timeout (Turn End)
+          // Word was selected, but time ran out. Move to next player.
+
           const playersRaw = Array.isArray(data.players) ? data.players : [];
           const players: string[] = playersRaw.map((p: any) =>
             typeof p === "string" ? p : p?.uid || p,
@@ -262,19 +369,25 @@ export default function GameRoom() {
           // Determine next drawer and whether the round should increment
           let nextDrawer = currentDrawer;
           let shouldIncrementRound = false;
-          if (players.length > 1) {
+
+          if (players.length > 0) {
             const foundIdx = players.findIndex((p) => p === currentDrawer);
+            // If current drawer not found (e.g. left), start from 0.
             const idx = foundIdx >= 0 ? foundIdx : 0;
             const nextIdx = (idx + 1) % players.length;
             nextDrawer = players[nextIdx];
+
+            // If we wrapped around to the start (or passed it), increment round
             if (nextIdx <= idx) shouldIncrementRound = true;
           }
 
           const nextRound = (data.round || 1) + (shouldIncrementRound ? 1 : 0);
           const maxRounds = data.maxRounds || TOTAL_ROUNDS_FALLBACK;
           const newStatus = nextRound > maxRounds ? "finished" : "playing";
+
+          // Next phase is Word Selection (30s)
           const newRoundEnd =
-            newStatus === "playing" ? Date.now() + 120000 : null;
+            newStatus === "playing" ? Date.now() + 30000 : null;
 
           const updateObj: any = {
             strokes: [],
@@ -284,14 +397,14 @@ export default function GameRoom() {
             round: nextRound,
             currentDrawer: nextDrawer,
             status: newStatus,
+            roundEndTimestamp: newRoundEnd,
           };
-          // set or clear roundEndTimestamp depending on status
-          updateObj.roundEndTimestamp = newRoundEnd;
 
           tx.update(gameRef, updateObj);
         });
       } catch (e) {
         console.error("advance on timeout failed", e);
+        timeoutProcessedRef.current = null;
       }
     })();
   }, [remainingSeconds, id, gameData]);
@@ -375,6 +488,7 @@ export default function GameRoom() {
                   p,
                 points: gameData.scores ? (gameData.scores[p] ?? 0) : 0,
                 avatar: data?.avatarUrl || data?.photoURL || null,
+                avatarGradientIndex: data?.avatarGradientIndex,
               };
             } catch (e) {
               return {
@@ -404,7 +518,18 @@ export default function GameRoom() {
     })();
   }, [gameData, userId]);
 
+  const handleStrokeStart = () => {
+    if (
+      isDrawer &&
+      gameData?.status === "playing" &&
+      secretWord.trim().length > 0
+    ) {
+      setIsDrawing(true);
+    }
+  };
+
   const handleStrokeFinished = async (newStroke: Stroke) => {
+    setIsDrawing(false);
     if (!gameData || gameData.currentDrawer !== userId || isUpdating.current)
       return;
 
@@ -478,7 +603,7 @@ export default function GameRoom() {
     try {
       const gameRef = doc(db, "games", id as string);
       const firstDrawer = gameData.players[0]?.uid || gameData.players[0];
-      const roundEnd = Date.now() + 120000; // 120s
+      const roundEnd = Date.now() + 30000; // 30s for word selection
       await updateDoc(gameRef, {
         status: "playing",
         round: 1,
@@ -584,7 +709,7 @@ export default function GameRoom() {
 
         const newStatus = nextRound > maxRounds ? "finished" : "playing";
 
-        const newRoundEnd = Date.now() + 120000; // reset timer for next round
+        const newRoundEnd = Date.now() + 30000; // reset timer for next round (word selection)
 
         // Update game doc to reflect round end and scoring
         tx.update(gameRef, {
@@ -718,134 +843,176 @@ export default function GameRoom() {
             onStart={handleStartGame}
           />
 
-          {/* Main Game Area */}
-          <View style={styles.gameContent}>
-            {/* Word selection panel for drawer before drawing */}
-            {gameData?.currentDrawer === userId &&
-              !((gameData as any)?.word || (gameData as any).currentWord) && (
-                <View style={styles.wordPicker}>
-                  <View style={styles.wordPickerHeader}>
-                    <Text style={styles.wordPickerTitle}>
-                      Choose a word to draw
-                    </Text>
-                    <TouchableOpacity
-                      onPress={() => setRefreshKey((k) => k + 1)}
-                      style={styles.shuffleButton}
-                    >
-                      <Ionicons name="shuffle" size={18} color="#4B5563" />
-                      <Text style={styles.shuffleText}>Shuffle</Text>
-                    </TouchableOpacity>
-                  </View>
-                  <View style={styles.wordOptions}>
-                    {candidateWords.map((w) => (
+          {/* Main Content Wrapper: Reorders Chat/Game when keyboard is open */}
+          <View
+            style={{
+              flex: 1,
+              flexDirection: isKeyboardVisible ? "column-reverse" : "column",
+            }}
+          >
+            {/* Main Game Area */}
+            <View style={styles.gameContent}>
+              {/* Word selection panel for drawer before drawing */}
+              {gameData?.currentDrawer === userId &&
+                !((gameData as any)?.word || (gameData as any).currentWord) && (
+                  <View style={styles.wordPicker}>
+                    <View style={styles.wordPickerHeader}>
+                      <Text style={styles.wordPickerTitle}>
+                        Choose a word to draw
+                      </Text>
                       <TouchableOpacity
-                        key={w}
-                        style={styles.wordOption}
-                        onPress={async () => {
-                          try {
-                            const gameRef = doc(db, "games", id as string);
-                            const roundEnd = Date.now() + 120000;
-                            await updateDoc(gameRef, {
-                              word: w,
-                              currentWord: w,
-                              roundEndTimestamp: roundEnd,
-                              guessed: [],
-                            });
-                          } catch (e) {
-                            console.error("select word failed", e);
-                          }
-                        }}
+                        onPress={() => setRefreshKey((k) => k + 1)}
+                        style={styles.shuffleButton}
                       >
-                        <Text style={styles.wordOptionText}>{w}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                  <View style={styles.customWordSection}>
-                    <Text style={styles.orText}>OR</Text>
-                    <View style={styles.customInputRow}>
-                      <TextInput
-                        style={styles.customInput}
-                        placeholder="Type your own..."
-                        placeholderTextColor="#9CA3AF"
-                        value={customWord}
-                        onChangeText={setCustomWord}
-                        maxLength={20}
-                        autoCapitalize="characters"
-                      />
-                      <TouchableOpacity
-                        style={styles.customSubmitBtn}
-                        onPress={handleCustomWordSubmit}
-                      >
-                        <Ionicons name="checkmark" size={20} color="white" />
+                        <Ionicons name="shuffle" size={18} color="#4B5563" />
+                        <Text style={styles.shuffleText}>Shuffle</Text>
                       </TouchableOpacity>
                     </View>
+                    <View style={styles.wordOptions}>
+                      {candidateWords.map((w) => (
+                        <TouchableOpacity
+                          key={w}
+                          style={styles.wordOption}
+                          onPress={async () => {
+                            try {
+                              const gameRef = doc(db, "games", id as string);
+                              const roundEnd = Date.now() + 120000;
+                              await updateDoc(gameRef, {
+                                word: w,
+                                currentWord: w,
+                                roundEndTimestamp: roundEnd,
+                                guessed: [],
+                              });
+                            } catch (e) {
+                              console.error("select word failed", e);
+                            }
+                          }}
+                        >
+                          <Text style={styles.wordOptionText}>{w}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                    <View style={styles.customWordSection}>
+                      <Text style={styles.orText}>OR</Text>
+                      <View style={styles.customInputRow}>
+                        <TextInput
+                          style={styles.customInput}
+                          placeholder="Type your own..."
+                          placeholderTextColor="#9CA3AF"
+                          value={customWord}
+                          onChangeText={setCustomWord}
+                          maxLength={20}
+                          autoCapitalize="characters"
+                        />
+                        <TouchableOpacity
+                          style={styles.customSubmitBtn}
+                          onPress={handleCustomWordSubmit}
+                        >
+                          <Ionicons name="checkmark" size={20} color="white" />
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  </View>
+                )}
+              {/* Word Display */}
+              {isDrawer && gameData?.status === "playing" && (
+                <View style={styles.wordContainer}>
+                  <Text style={styles.wordLabel}>Draw this:</Text>
+                  <Text style={styles.secretWord}>{secretWord}</Text>
+                </View>
+              )}
+
+              {!isDrawer && gameData?.status === "playing" && (
+                <View style={styles.wordContainer}>
+                  <Text style={styles.wordLabel}>Guess the word!</Text>
+                  <View style={{ flexDirection: "row", alignItems: "center" }}>
+                    <Text style={styles.secretWord}>
+                      {secretWord
+                        .split("")
+                        .map((c) => (c === " " ? " " : "_ "))
+                        .join("")}
+                    </Text>
+                    <Text style={styles.wordLength}>
+                      ({(secretWord || "").replace(/\s+/g, "").length})
+                    </Text>
                   </View>
                 </View>
               )}
-            {/* Word Display */}
-            {isDrawer && gameData?.status === "playing" && (
-              <View style={styles.wordContainer}>
-                <Text style={styles.wordLabel}>Draw this:</Text>
-                <Text style={styles.secretWord}>{secretWord}</Text>
-              </View>
-            )}
 
-            {!isDrawer && gameData?.status === "playing" && (
-              <View style={styles.wordContainer}>
-                <Text style={styles.wordLabel}>Guess the word!</Text>
-                <View style={{ flexDirection: "row", alignItems: "center" }}>
-                  <Text style={styles.secretWord}>
-                    {secretWord
-                      .split("")
-                      .map((c) => (c === " " ? " " : "_ "))
-                      .join("")}
-                  </Text>
-                  <Text style={styles.wordLength}>
-                    ({(secretWord || "").replace(/\s+/g, "").length})
-                  </Text>
-                </View>
-              </View>
-            )}
-
-            {/* Canvas - THIS Component receives 'color', 'strokeWidth', 'strokes' */}
-            <View style={styles.canvasContainer}>
-              <DrawingCanvas
-                color={currentColor}
-                strokeWidth={currentWidth}
-                enabled={isDrawer && gameData?.status === "playing"}
-                strokes={gameData?.strokes || []}
-                onStrokeFinished={handleStrokeFinished}
-              />
-
-              {/* Overlay tools positioned on top of canvas so they're always visible */}
-              {isDrawer && (
-                <View style={styles.toolsOverlay} pointerEvents="box-none">
-                  <DrawingTools
-                    selectedColor={currentColor}
-                    onSelectColor={setCurrentColor}
+              {/* Canvas - THIS Component receives 'color', 'strokeWidth', 'strokes' */}
+              <View style={styles.canvasContainer}>
+                <View
+                  style={{ flex: 1 }}
+                  onTouchStart={handleStrokeStart}
+                  onTouchEnd={() => setIsDrawing(false)}
+                  onTouchCancel={() => setIsDrawing(false)}
+                >
+                  <DrawingCanvas
+                    color={currentColor}
                     strokeWidth={currentWidth}
-                    onSelectWidth={setCurrentWidth}
-                    onClear={handleClearCanvas}
-                    onUndo={handleUndo}
+                    enabled={
+                      isDrawer &&
+                      gameData?.status === "playing" &&
+                      secretWord.trim().length > 0
+                    }
+                    strokes={gameData?.strokes || []}
+                    onStrokeFinished={handleStrokeFinished}
                   />
                 </View>
-              )}
-            </View>
-          </View>
 
-          {/* Chat / Guesses */}
-          <View style={styles.chatContainer}>
-            <ChatWindow
-              gameId={id as string}
-              isDrawer={isDrawer}
-              currentWord={gameData?.word || ""}
-              currentUser={{
-                uid: auth.currentUser?.uid || "anon",
-                displayName: auth.currentUser?.displayName || "Player",
-              }}
-              guesses={gameData?.guesses || []}
-              onCorrectGuess={handleCorrectGuess}
-            />
+                {/* Overlay tools positioned on top of canvas so they're always visible */}
+                {isDrawer && secretWord.trim().length > 0 && !isDrawing && (
+                  <View style={styles.toolsOverlay} pointerEvents="box-none">
+                    {showDrawingTools ? (
+                      <View
+                        style={styles.toolsWrapper}
+                        pointerEvents="box-none"
+                      >
+                        <DrawingTools
+                          selectedColor={currentColor}
+                          onSelectColor={setCurrentColor}
+                          strokeWidth={currentWidth}
+                          onSelectWidth={setCurrentWidth}
+                          onClear={handleClearCanvas}
+                          onUndo={handleUndo}
+                        />
+                        <TouchableOpacity
+                          style={styles.closeToolsButton}
+                          onPress={() => setShowDrawingTools(false)}
+                        >
+                          <Ionicons name="close" size={20} color="white" />
+                        </TouchableOpacity>
+                      </View>
+                    ) : (
+                      <View pointerEvents="auto">
+                        <TouchableOpacity
+                          style={styles.showToolsButton}
+                          onPress={() => setShowDrawingTools(true)}
+                        >
+                          <Ionicons name="brush" size={28} color="white" />
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                  </View>
+                )}
+              </View>
+            </View>
+
+            {/* Chat / Guesses */}
+            <View style={styles.chatContainer}>
+              <ChatWindow
+                gameId={id as string}
+                isDrawer={isDrawer}
+                currentWord={gameData?.word || ""}
+                currentUser={{
+                  uid: auth.currentUser?.uid || "anon",
+                  displayName: auth.currentUser?.displayName || "Player",
+                }}
+                guesses={gameData?.guesses || []}
+                onCorrectGuess={handleCorrectGuess}
+                avoidKeyboard={!isKeyboardVisible}
+              />
+            </View>
           </View>
 
           {/* Player Menu Overlay (sliding) */}
@@ -886,6 +1053,26 @@ export default function GameRoom() {
             onClose={() => setShowInviteModal(false)}
             roomId={id as string}
           />
+
+          {/* Round Alert Overlay */}
+          {roundAlertText ? (
+            <View style={styles.roundAlertContainer} pointerEvents="none">
+              <Animated.Text
+                style={[
+                  styles.roundAlertText,
+                  {
+                    opacity: roundAlertOpacity,
+                    transform: [
+                      { scale: roundAlertScale },
+                      { rotate: "-6deg" },
+                    ],
+                  },
+                ]}
+              >
+                {roundAlertText}
+              </Animated.Text>
+            </View>
+          ) : null}
         </>
       )}
     </View>
@@ -895,7 +1082,7 @@ export default function GameRoom() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#F3F4F6",
+    backgroundColor: "#ffe2af",
   },
   loadingContainer: {
     flex: 1,
@@ -912,8 +1099,8 @@ const styles = StyleSheet.create({
     padding: 12,
     paddingTop: 40,
     backgroundColor: "white",
-    borderBottomWidth: 1,
-    borderBottomColor: "#E5E7EB",
+    borderBottomWidth: 2,
+    borderBottomColor: "#333",
     justifyContent: "space-evenly",
   },
   headerTitle: {
@@ -969,6 +1156,31 @@ const styles = StyleSheet.create({
     right: 12,
     bottom: 12,
     alignItems: "center",
+  },
+  showToolsButton: {
+    backgroundColor: "rgba(67, 149, 255, 0.73)",
+    padding: 15,
+    borderRadius: 35,
+    elevation: 5,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+  },
+  toolsWrapper: {
+    flexDirection: "column-reverse",
+    alignItems: "center",
+  },
+  closeToolsButton: {
+    backgroundColor: "rgba(0,0,0,0.6)",
+    padding: 8,
+    borderRadius: 20,
+    marginBottom: 0,
+    elevation: 5,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.8,
   },
   chatContainer: {
     flex: 1,
@@ -1146,9 +1358,11 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     marginBottom: 12,
     alignItems: "center",
+    borderColor: "#333",
+    borderWidth: 2,
   },
   wordPickerTitle: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: "700",
     color: "#111827",
   },
@@ -1198,11 +1412,13 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     fontSize: 14,
     color: "#111827",
+    borderColor: "#333",
+    borderWidth: 1,
   },
   customSubmitBtn: {
-    backgroundColor: "#D97706",
+    backgroundColor: "#ff8800",
     padding: 10,
-    borderRadius: 8,
+    borderRadius: 33,
     justifyContent: "center",
     alignItems: "center",
   },
@@ -1223,5 +1439,31 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#4B5563",
     fontWeight: "600",
+  },
+  roundAlertContainer: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: "center",
+    alignItems: "center",
+    zIndex: 100,
+    elevation: 100,
+  },
+  roundAlertText: {
+    fontSize: 36,
+    fontWeight: "900",
+    color: "#FBBF24", // Amber-400
+    textShadowColor: "#B91C1C", // Red-700
+    textShadowOffset: { width: 3, height: 3 },
+    textShadowRadius: 0,
+    textAlign: "center",
+    paddingVertical: 20,
+    paddingHorizontal: 40,
+    backgroundColor: "rgba(74, 27, 0, 0.74)",
+    borderRadius: 16,
+    borderWidth: 4,
+    borderColor: "#F59E0B", // Amber-500
   },
 });
