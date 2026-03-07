@@ -24,6 +24,7 @@ import {
   View,
   ViewStyle,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useToast } from "../context/ToastContext";
 import { db } from "../firebaseConfig";
 
@@ -141,12 +142,17 @@ export default function ChatWindow({
   avoidKeyboard = true,
 }: ChatProps) {
   const { playSound } = useToast();
+  const insets = useSafeAreaInsets();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState("");
   const [historyVisible, setHistoryVisible] = useState(false);
   const flatListRef = useRef<FlatList<ChatMessage>>(null);
   const historyListRef = useRef<FlatList<ChatMessage>>(null);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
+  const bottomInset = Math.max(
+    insets.bottom,
+    Platform.OS === "android" ? 14 : 8,
+  );
 
   const currentUserRef = useRef(currentUser);
   const isInitialLoad = useRef(true);
@@ -389,7 +395,9 @@ export default function ChatWindow({
         renderItem={renderItem}
         keyExtractor={(item) => item.id}
         style={styles.list as any}
-        contentContainerStyle={styles.listContent as any}
+        contentContainerStyle={
+          [styles.listContent, { paddingBottom: 20 + bottomInset }] as any
+        }
         pointerEvents="box-none"
       />
 
@@ -420,14 +428,24 @@ export default function ChatWindow({
               renderItem={renderHistoryItem}
               keyExtractor={(item) => item.id}
               style={styles.historyList as any}
-              contentContainerStyle={styles.historyContent as any}
+              contentContainerStyle={
+                [
+                  styles.historyContent,
+                  { paddingBottom: 60 + bottomInset },
+                ] as any
+              }
               showsVerticalScrollIndicator={false}
               onScroll={handleScroll}
               scrollEventThrottle={16}
             />
             {showScrollBottom && (
               <TouchableOpacity
-                style={styles.scrollToBottomButton as any}
+                style={
+                  [
+                    styles.scrollToBottomButton,
+                    { bottom: 20 + bottomInset },
+                  ] as any
+                }
                 onPress={scrollToBottom}
               >
                 <Ionicons name="arrow-down" size={20} color="white" />
@@ -443,7 +461,7 @@ export default function ChatWindow({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#FEF3C7",
+    backgroundColor: "#fbbf24",
     borderRadius: 0,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
@@ -590,7 +608,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 4,
     elevation: 5,
-    paddingBottom: 0,
+    paddingBottom: 8,
   },
   historyHeader: {
     flexDirection: "row",

@@ -11,6 +11,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { useToast } from "../context/ToastContext";
 import { auth, db } from "../firebaseConfig";
 import InviteFriendsModal from "./InviteFriendsModal";
 
@@ -42,19 +43,42 @@ export default function WaitingLobby({
   onStart?: () => void;
 }) {
   const [showInvite, setShowInvite] = useState(false);
+  const { playSound, showAlert } = useToast();
   const me = auth.currentUser;
 
   const leaveRoom = async () => {
-    try {
-      if (!me) return;
-      await updateDoc(doc(db, "games", roomId), {
-        players: arrayRemove(me.uid),
-      });
-    } catch (e) {
-      console.error("Failed to leave room", e);
-    }
-    if (onLeave) onLeave();
-    else onClose();
+    // playSound(require("../assets/sounds/lock.mp3"));
+
+    showAlert({
+      title: "Leave Lobby",
+      message: "Do you want to leave this lobby?",
+      buttons: [
+        {
+          text: "Wait",
+          style: "cancel",
+          onPress: () => {
+            playSound(require("../assets/sounds/click.mp3"));
+          },
+        },
+        {
+          text: "Leave",
+          style: "destructive",
+          onPress: async () => {
+            playSound(require("../assets/sounds/decline.mp3"));
+            try {
+              if (!me) return;
+              await updateDoc(doc(db, "games", roomId), {
+                players: arrayRemove(me.uid),
+              });
+            } catch (e) {
+              console.error("Failed to leave room", e);
+            }
+            if (onLeave) onLeave();
+            else onClose();
+          },
+        },
+      ],
+    });
   };
 
   return (
@@ -95,7 +119,10 @@ export default function WaitingLobby({
             ))}
             <TouchableOpacity
               style={styles.inviteBtn}
-              onPress={() => setShowInvite(true)}
+              onPress={() => {
+                setShowInvite(true);
+                playSound(require("../assets/sounds/lock.mp3"));
+              }}
             >
               <Ionicons name="add" size={30} color="#666" />
             </TouchableOpacity>
@@ -108,7 +135,10 @@ export default function WaitingLobby({
             {hostId === me?.uid && (
               <TouchableOpacity
                 style={styles.startBtn}
-                onPress={() => onStart && onStart()}
+                onPress={() => {
+                  onStart && onStart();
+                  playSound(require("../assets/sounds/gameStart.mp3"));
+                }}
               >
                 <Text style={styles.startText}>Start Game</Text>
               </TouchableOpacity>

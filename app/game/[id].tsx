@@ -1,30 +1,37 @@
+import Preloader from "@/components/preloader";
 import GRADIENTS from "@/data/gradients";
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
+  get,
+  onDisconnect,
+  onValue,
+  ref as rtdbRef,
+  serverTimestamp as rtdbServerTimestamp,
+  set as rtdbSet,
+} from "firebase/database";
+import {
   addDoc,
   arrayUnion,
   collection,
   deleteDoc,
+  deleteField,
   doc,
   getDoc,
-  getDocs,
   increment,
   onSnapshot,
-  query,
   runTransaction,
   serverTimestamp,
   setDoc,
   updateDoc,
-  where,
 } from "firebase/firestore";
 import React, { useEffect, useRef, useState } from "react";
 import {
-  ActivityIndicator,
   Alert,
   Animated,
+  AppState,
   Easing,
   Keyboard,
   StyleSheet,
@@ -41,7 +48,7 @@ import Podium from "../../components/Podium";
 import WaitingLobby from "../../components/WaitingLobby";
 import { WORDS_POOL } from "../../components/words";
 import { useToast } from "../../context/ToastContext";
-import { auth, db } from "../../firebaseConfig";
+import { auth, db, rtdb } from "../../firebaseConfig";
 
 interface Stroke {
   path: string;
@@ -108,6 +115,10 @@ export default function GameRoom() {
   const roundAlertScale = useRef(new Animated.Value(0.5)).current;
   const lastInviteTimestamp = useRef<number>(0);
   const [lastDrawer, setLastDrawer] = useState<string | null>(null);
+  const didLeaveRoomRef = useRef(false);
+  const hasJoinedRoomRef = useRef(false);
+  const lastStalePruneAtRef = useRef(0);
+  const lastPresencePruneAtRef = useRef(0);
 
   // Time Sync Logic
   const timeOffsetRef = useRef(0);
@@ -123,13 +134,17 @@ export default function GameRoom() {
     userId: string,
   ): Promise<"users" | "guestUsers"> => {
     try {
-      const usersDoc = await getDocs(
-        query(collection(db, "users"), where("__name__", "==", userId)),
-      );
-      return usersDoc.empty ? "guestUsers" : "users";
+      // Try fetching from users collection first
+      const usersDoc = await getDoc(doc(db, "users", userId));
+      if (usersDoc.exists()) {
+        return "users";
+      }
+      // If not in users, check guestUsers
+      const guestUsersDoc = await getDoc(doc(db, "guestUsers", userId));
+      return guestUsersDoc.exists() ? "guestUsers" : "guestUsers"; // Default to guestUsers for new guest users
     } catch (e) {
       console.error("Error determining user collection:", e);
-      return "users"; // Default to users on error
+      return "guestUsers"; // Default to guestUsers on error to prevent crashes
     }
   };
 
@@ -154,6 +169,108 @@ export default function GameRoom() {
   }, [userId]);
 
   const TOTAL_ROUNDS_FALLBACK = 5; // fallback rounds if none provided
+  const PRESENCE_STALE_MS = 20000; // Increased from 15s to 20s to reduce false positives
+
+  const getPresenceTimestamp = (value: any): number => {
+    if (!value) return 0;
+    if (typeof value === "number") return value;
+    if (typeof value?.toMillis === "function") return value.toMillis();
+    return 0;
+  };
+
+  const removePlayerFromGame = async (targetUserId: string) => {
+    if (!id) return;
+    const gameRef = doc(db, "games", id as string);
+
+    await runTransaction(db, async (tx) => {
+      const docSnap = await tx.get(gameRef);
+      if (!docSnap.exists()) return;
+      const data = docSnap.data() as any;
+
+      const currentPlayers = Array.isArray(data.players) ? data.players : [];
+      const updatedPlayers = currentPlayers.filter((p: any) => {
+        const pid = typeof p === "string" ? p : p?.uid;
+        return pid !== targetUserId;
+      });
+
+      if (updatedPlayers.length === 0) {
+        tx.delete(gameRef);
+        return;
+      }
+
+      const updates: any = {
+        players: updatedPlayers,
+        [`presence.${targetUserId}`]: deleteField(),
+      };
+
+      if (data.hostId === targetUserId && updatedPlayers.length > 0) {
+        const next = updatedPlayers[0];
+        updates.hostId = typeof next === "string" ? next : next.uid;
+      }
+
+      // If current drawer leaves, rotate drawer and reset turn state
+      if (data.currentDrawer === targetUserId && data.status === "playing") {
+        const myIndex = currentPlayers.findIndex((p: any) => {
+          const pid = typeof p === "string" ? p : p?.uid;
+          return pid === targetUserId;
+        });
+        const nextIndex = myIndex >= updatedPlayers.length ? 0 : myIndex;
+        const nextPlayer = updatedPlayers[nextIndex];
+        const nextUid =
+          typeof nextPlayer === "string" ? nextPlayer : nextPlayer.uid;
+
+        updates.currentDrawer = nextUid;
+        updates.word = "";
+        updates.currentWord = "";
+        updates.strokes = [];
+        updates.guessed = [];
+        updates.roundEndTimestamp = getServerTime() + 30000;
+      }
+
+      tx.update(gameRef, updates);
+    });
+  };
+
+  const leaveGameRoom = async (withMessage = true) => {
+    if (!id || !userId || didLeaveRoomRef.current || !hasJoinedRoomRef.current)
+      return;
+
+    let didRemove = false;
+    let roomDeleted = false;
+    try {
+      await removePlayerFromGame(userId);
+      didRemove = true;
+      didLeaveRoomRef.current = true;
+    } catch {
+      // If room was deleted concurrently, ignore.
+      roomDeleted = true;
+    }
+
+    if (withMessage && didRemove && !roomDeleted) {
+      try {
+        await addDoc(collection(db, "games", id as string, "messages"), {
+          isSystem: true,
+          systemType: "leave",
+          text: `${auth.currentUser?.displayName || "A player"} left the game`,
+          timestamp: serverTimestamp(),
+        });
+      } catch {
+        // Ignore leave message failures.
+      }
+    }
+  };
+
+  // Helper function to calculate current turn within the round
+  const calculateCurrentTurn = () => {
+    if (!gameData?.players) return 1;
+    const players = gameData.players;
+    const currentDrawerIndex = players.findIndex((p: any) => {
+      const uid = typeof p === "string" ? p : p?.uid;
+      return uid === gameData.currentDrawer;
+    });
+    return currentDrawerIndex >= 0 ? currentDrawerIndex + 1 : 1;
+  };
+
   const slideAnim = useRef(new Animated.Value(0)).current; // 0 closed, 1 open
 
   useEffect(() => {
@@ -247,12 +364,29 @@ export default function GameRoom() {
             ...currentRecentGames,
           ].slice(0, 5);
 
-          await updateDoc(userRef, {
+          const updatePayload = {
             totalGames: increment(1),
             totalScore: increment(myScore),
             wins: isWinner ? increment(1) : increment(0),
             recentGames: newRecentGames,
-          });
+          };
+
+          // If document exists, update it; otherwise create it with merge
+          if (userSnap.exists()) {
+            await updateDoc(userRef, updatePayload);
+          } else {
+            // Create document with initial stats if it doesn't exist
+            await setDoc(
+              userRef,
+              {
+                totalGames: 1,
+                totalScore: myScore,
+                wins: isWinner ? 1 : 0,
+                recentGames: newRecentGames,
+              },
+              { merge: true },
+            );
+          }
         } catch (e) {
           console.error("Failed to update stats", e);
         }
@@ -377,6 +511,7 @@ export default function GameRoom() {
   const [remainingSeconds, setRemainingSeconds] = useState<number | null>(null);
   const [customWord, setCustomWord] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
+  const lastPickerKeyRef = useRef<string>("");
 
   useEffect(() => {
     if (!id) return;
@@ -396,20 +531,205 @@ export default function GameRoom() {
     return () => unsubscribe();
   }, [id]);
 
-  // Generate candidate words for drawer when they become the current drawer
+  // Remove player when app goes background/inactive (covers swipe-close and task switch on mobile)
+  useEffect(() => {
+    if (!id || !userId) return;
+
+    const sub = AppState.addEventListener("change", (nextState) => {
+      if (nextState === "background" || nextState === "inactive") {
+        leaveGameRoom(false).catch(() => {});
+      }
+    });
+
+    return () => sub.remove();
+  }, [id, userId]);
+
+  // Presence heartbeat and stale-player cleanup (handles abrupt close/network loss)
+  useEffect(() => {
+    if (!id || !userId) return;
+    const gameRef = doc(db, "games", id as string);
+
+    // Add jitter to prevent all clients from updating simultaneously
+    const jitter = Math.random() * 1000;
+    const heartbeatInterval = 5000 + jitter;
+
+    let isHeartbeatActive = true;
+    const sendHeartbeat = async () => {
+      if (!isHeartbeatActive || didLeaveRoomRef.current) return;
+      try {
+        await updateDoc(gameRef, {
+          [`presence.${userId}`]: getServerTime(),
+          lastUpdated: serverTimestamp(),
+        });
+      } catch (err) {
+        // Ignore transient heartbeat failures
+        if (__DEV__) {
+          console.log(
+            "[Heartbeat] Update failed (expected during concurrent writes)",
+          );
+        }
+      }
+      if (isHeartbeatActive) {
+        setTimeout(sendHeartbeat, heartbeatInterval);
+      }
+    };
+
+    // Initial heartbeat with jitter delay
+    const initialTimeout = setTimeout(sendHeartbeat, jitter);
+
+    const stalePrune = setInterval(async () => {
+      if (!gameData || gameData.status === "finished") {
+        return;
+      }
+
+      const now = getServerTime();
+      // Increase debounce to 5 seconds to reduce prune frequency
+      if (now - lastStalePruneAtRef.current < 5000) return;
+      lastStalePruneAtRef.current = now;
+
+      const presence = (gameData as any)?.presence || {};
+      const playerIds = (gameData.players || []).map((p: any) =>
+        typeof p === "string" ? p : p?.uid,
+      );
+
+      // Any active player can prune stale participants (not only host).
+      const mySeenAt = getPresenceTimestamp(presence[userId]);
+      const iAmActiveInRoom =
+        playerIds.includes(userId) &&
+        mySeenAt > 0 &&
+        now - mySeenAt <= PRESENCE_STALE_MS;
+      if (!iAmActiveInRoom) return;
+
+      const staleIds = playerIds.filter((pid: string) => {
+        if (!pid || pid === userId) return false;
+        const seenAt = getPresenceTimestamp(presence[pid]);
+        return !seenAt || now - seenAt > PRESENCE_STALE_MS;
+      });
+
+      if (staleIds.length === 0) return;
+
+      // Remove one stale player per cycle to reduce write contention.
+      try {
+        await removePlayerFromGame(staleIds[0]);
+      } catch (err) {
+        // Ignore race conditions and retry next cycle
+        if (__DEV__) {
+          console.log("[StalePrune] Remove failed (will retry):", err);
+        }
+      }
+    }, 7000); // Increased from 5000 to 7000
+
+    return () => {
+      isHeartbeatActive = false;
+      clearTimeout(initialTimeout);
+      clearInterval(stalePrune);
+    };
+  }, [id, userId, gameData]);
+
+  // Realtime presence: detects app kill/network loss immediately via server-side onDisconnect.
+  useEffect(() => {
+    if (!id || !userId) return;
+
+    const myPresenceRef = rtdbRef(rtdb, `presence/games/${id}/${userId}`);
+    const connectedRef = rtdbRef(rtdb, ".info/connected");
+
+    const unsubscribe = onValue(connectedRef, async (snap) => {
+      if (snap.val() !== true) return;
+      try {
+        await onDisconnect(myPresenceRef).set({
+          state: "offline",
+          lastChanged: rtdbServerTimestamp(),
+        });
+        await rtdbSet(myPresenceRef, {
+          state: "online",
+          lastChanged: rtdbServerTimestamp(),
+        });
+      } catch {
+        // Ignore transient presence setup failures.
+      }
+    });
+
+    return () => {
+      unsubscribe();
+      rtdbSet(myPresenceRef, {
+        state: "offline",
+        lastChanged: Date.now(),
+      }).catch(() => {});
+    };
+  }, [id, userId]);
+
+  // Remove offline users quickly based on Realtime presence state.
+  useEffect(() => {
+    if (!id || !userId) return;
+
+    const gamePresenceRef = rtdbRef(rtdb, `presence/games/${id}`);
+    const gameRef = doc(db, "games", id as string);
+
+    const unsubscribe = onValue(gamePresenceRef, async () => {
+      const now = Date.now();
+      // Increase debounce to 3 seconds to reduce concurrent remove operations
+      if (now - lastPresencePruneAtRef.current < 3000) return;
+      lastPresencePruneAtRef.current = now;
+
+      try {
+        const [presenceSnap, gameSnap] = await Promise.all([
+          get(gamePresenceRef),
+          getDoc(gameRef),
+        ]);
+
+        const presence = presenceSnap.val() || {};
+
+        if (!gameSnap.exists()) return;
+
+        const game = gameSnap.data() as any;
+        if (game.status === "finished") return;
+
+        const players = Array.isArray(game.players) ? game.players : [];
+        const playerIds = players.map((p: any) =>
+          typeof p === "string" ? p : p?.uid,
+        );
+
+        const offlineIds = playerIds.filter((pid: string) => {
+          if (!pid || pid === userId) return false;
+          const status = presence[pid];
+          return status?.state === "offline";
+        });
+
+        if (offlineIds.length === 0) return;
+
+        // Remove one player at a time to minimize contention.
+        await removePlayerFromGame(offlineIds[0]);
+      } catch (err) {
+        // Ignore race conditions and transient read/write issues.
+        if (__DEV__) {
+          console.log(
+            "[PresencePrune] Remove failed (expected during concurrent writes)",
+          );
+        }
+      }
+    });
+
+    return () => unsubscribe();
+  }, [id, userId]);
+
+  // Generate candidate words for drawer during the selection phase.
+  // This is keyed by round/drawer/timer so transitions (leave/timeout/exit) don't miss picker regeneration.
   useEffect(() => {
     const isDrawer = gameData?.currentDrawer === userId;
     const currentWord =
       (gameData as any)?.word ?? (gameData as any)?.currentWord;
+    const isSelectionPhase =
+      !!isDrawer && !currentWord && gameData?.status === "playing";
+    const pickerKey = `${gameData?.round ?? 0}:${gameData?.currentDrawer ?? ""}:${(gameData as any)?.roundEndTimestamp ?? 0}:${refreshKey}`;
 
     const filterWord = (w: string) => {
       if (!w) return false;
-      // normalize and remove extra spacing
       const n = w.trim();
-      // allow spaces and letters, exclude digits/punctuation
+      // Allow letters, spaces, hyphens, apostrophes - exclude digits and special chars
       if (!/^[A-Za-z\s'-]+$/.test(n)) return false;
       const len = n.replace(/\s+/g, "").length; // length excluding spaces
-      return len >= 3 && len <= 12;
+      // Accept words between 3-15 characters (good range for drawing)
+      return len >= 3 && len <= 15;
     };
 
     const pickRandom = (arr: string[], count: number) => {
@@ -422,84 +742,162 @@ export default function GameRoom() {
       return res;
     };
 
-    const fetchRemoteWords = async () => {
+    const fetchWithTimeout = async (
+      url: string,
+      timeout = 5000,
+    ): Promise<Response> => {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeout);
       try {
-        // Try Random Word API (vercel). Returns lowercase single words.
-        const resp = await fetch(
-          "https://random-word-api.vercel.app/api?words=60",
-        );
-        if (!resp.ok) throw new Error("remote word fetch failed");
-        const words: string[] = (await resp.json()).map((w: string) =>
-          w.toUpperCase(),
-        );
-        const filtered = words.filter(filterWord);
-        if (filtered.length >= 3) return filtered;
+        const response = await fetch(url, { signal: controller.signal });
+        clearTimeout(timeoutId);
+        return response;
+      } catch (e) {
+        clearTimeout(timeoutId);
+        throw e;
+      }
+    };
 
-        // fallback: try Datamuse for more varied words (may include multi-word phrases)
+    const fetchRemoteWords = async () => {
+      // Strategy 1: Try Random Word API (fast, reliable)
+      try {
+        const resp = await fetchWithTimeout(
+          "https://random-word-api.vercel.app/api?words=80",
+          4000,
+        );
+        if (resp.ok) {
+          const words: string[] = await resp.json();
+          const filtered = words
+            .map((w: string) => w.toUpperCase())
+            .filter(filterWord);
+
+          if (filtered.length >= 3) return filtered;
+          console.log("Random Word API returned insufficient valid words");
+        }
+      } catch (e) {
+        console.log("Random Word API unavailable");
+      }
+
+      // Strategy 2: Try Datamuse API with noun filtering
+      try {
         const topics = [
-          "animals",
           "food",
           "nature",
           "sports",
-          "transport",
-          "home",
-          "clothing",
-          "music",
+          "objects",
           "tools",
+          "clothing",
+          "vehicles",
+          "music",
+          "science",
+          "technology",
+          "movies",
+          "literature",
+          "art",
         ];
         const topic = topics[Math.floor(Math.random() * topics.length)];
-        const dm = await fetch(
-          `https://api.datamuse.com/words?topics=${topic}&max=100&md=p`,
+        const dm = await fetchWithTimeout(
+          `https://api.datamuse.com/words?topics=${topic}&max=100`,
+          4000,
         );
         if (dm.ok) {
           const dmJson = await dm.json();
           const candidates = dmJson
-            .filter((x: any) => {
-              const w = (x.word || "").toLowerCase();
-              return (
-                x.tags?.includes("n") && !w.endsWith("ing") && !w.endsWith("ed")
-              );
-            })
             .map((x: any) => (x.word || "").toString().toUpperCase())
             .filter(filterWord);
           if (candidates.length >= 3) return candidates;
         }
       } catch (e) {
-        // ignore errors and allow fallback to local pool
-        console.warn("remote words unavailable", e);
+        console.log("Datamuse API unavailable");
       }
+
+      // Strategy 3: Try WordsAPI alternative public endpoint
+      try {
+        const resp = await fetchWithTimeout(
+          "https://random-word-form.herokuapp.com/random/noun?count=50",
+          4000,
+        );
+        if (resp.ok) {
+          const words: string[] = await resp.json();
+          const filtered = words
+            .map((w: string) => w.toUpperCase())
+            .filter(filterWord);
+          if (filtered.length >= 3) return filtered;
+        }
+      } catch (e) {
+        console.log("Alternative word API unavailable");
+      }
+
+      // All remote sources failed - use local pool (never fails)
       return null;
     };
 
-    if (isDrawer && !currentWord && gameData?.status === "playing") {
+    if (!isSelectionPhase) {
+      lastPickerKeyRef.current = "";
+      setCandidateWords([]);
+      setCustomWord("");
+      return;
+    }
+
+    // Avoid re-fetching repeatedly for the same turn unless user explicitly shuffled.
+    if (lastPickerKeyRef.current === pickerKey && candidateWords.length > 0) {
+      return;
+    }
+    lastPickerKeyRef.current = pickerKey;
+
+    let cancelled = false;
+
+    if (isSelectionPhase) {
       (async () => {
         const remote = await fetchRemoteWords();
-        if (remote && remote.length > 0) {
-          setCandidateWords(pickRandom(remote, 3));
+        if (remote && remote.length >= 3) {
+          if (!cancelled) setCandidateWords(pickRandom(remote, 3));
           return;
         }
 
-        // Fallback to local WORDS_POOL, prefer less-childish by filtering length
-        const localFiltered = WORDS_POOL.filter(filterWord).map((w) =>
-          w.toUpperCase(),
+        // Fallback to local WORDS_POOL (guaranteed to work)
+        // Prefer single-word entries and varied difficulty
+        const singleWords = WORDS_POOL.filter(
+          (w) => !w.includes(" ") && w.length >= 4 && w.length <= 10,
+        ).map((w) => w.toUpperCase());
+
+        const mediumWords = WORDS_POOL.filter(
+          (w) => w.length >= 5 && w.length <= 8,
+        ).map((w) => w.toUpperCase());
+
+        const allLocalWords = WORDS_POOL.map((w) => w.toUpperCase()).filter(
+          filterWord,
         );
-        if (localFiltered.length >= 3) {
-          setCandidateWords(pickRandom(localFiltered, 3));
-        } else {
-          // final fallback: pick any from pool
-          setCandidateWords(pickRandom(WORDS_POOL.slice(), 3));
+
+        // Try to get a good mix: prioritize single words, then medium length, then any
+        let poolToUse = singleWords;
+        if (poolToUse.length < 10) poolToUse = mediumWords;
+        if (poolToUse.length < 10) poolToUse = allLocalWords;
+
+        if (!cancelled) {
+          setCandidateWords(
+            pickRandom(
+              poolToUse.length >= 3 ? poolToUse : WORDS_POOL.slice(),
+              3,
+            ),
+          );
         }
       })();
-    } else {
-      setCandidateWords([]);
-      setCustomWord("");
     }
+
+    return () => {
+      cancelled = true;
+    };
   }, [
     gameData?.currentDrawer,
     gameData?.word,
+    (gameData as any)?.currentWord,
     gameData?.status,
+    gameData?.round,
+    (gameData as any)?.roundEndTimestamp,
     userId,
     refreshKey,
+    candidateWords.length,
   ]);
 
   // Countdown based on gameData.roundEndTimestamp
@@ -702,7 +1100,6 @@ export default function GameRoom() {
   useEffect(() => {
     if (!id || !userId) return;
     const gameRef = doc(db, "games", id as string);
-    let joined = false;
 
     (async () => {
       try {
@@ -713,7 +1110,10 @@ export default function GameRoom() {
         );
         if (!already) {
           try {
-            await updateDoc(gameRef, { players: arrayUnion(userId) });
+            await updateDoc(gameRef, {
+              players: arrayUnion(userId),
+              [`presence.${userId}`]: getServerTime(),
+            });
           } catch (e) {
             console.error("Failed to join room", e);
           }
@@ -732,86 +1132,22 @@ export default function GameRoom() {
               timestamp: serverTimestamp(),
             });
           } catch (e) {}
+        } else {
+          // Refresh presence on re-open/reconnect.
+          try {
+            await updateDoc(gameRef, {
+              [`presence.${userId}`]: getServerTime(),
+            });
+          } catch {}
         }
-        joined = true;
+        hasJoinedRoomRef.current = true;
       } catch (e) {
         console.error("join effect error", e);
       }
     })();
 
     return () => {
-      (async () => {
-        if (!joined) return;
-        let roomDeleted = false;
-        try {
-          roomDeleted = await runTransaction(db, async (tx) => {
-            const docSnap = await tx.get(gameRef);
-            if (!docSnap.exists()) return true;
-            const data = docSnap.data();
-            const currentPlayers = data.players || [];
-            const updatedPlayers = currentPlayers.filter((p: any) => {
-              const pid = typeof p === "string" ? p : p.uid;
-              return pid !== userId;
-            });
-
-            if (updatedPlayers.length === 0) {
-              tx.delete(gameRef);
-              return true;
-            }
-
-            const updates: any = { players: updatedPlayers };
-
-            if (data.hostId === userId) {
-              if (updatedPlayers.length > 0) {
-                const next = updatedPlayers[0];
-                updates.hostId = typeof next === "string" ? next : next.uid;
-              }
-            }
-
-            // If the current drawer leaves, pass the turn to the next player
-            if (data.currentDrawer === userId && data.status === "playing") {
-              if (updatedPlayers.length > 0) {
-                const myIndex = currentPlayers.findIndex((p: any) => {
-                  const pid = typeof p === "string" ? p : p.uid;
-                  return pid === userId;
-                });
-                // The player at myIndex is removed, so the next player shifts into that index.
-                // If myIndex was the last one, we wrap to 0.
-                const nextIndex =
-                  myIndex >= updatedPlayers.length ? 0 : myIndex;
-                const nextPlayer = updatedPlayers[nextIndex];
-                const nextUid =
-                  typeof nextPlayer === "string" ? nextPlayer : nextPlayer.uid;
-
-                updates.currentDrawer = nextUid;
-                updates.word = "";
-                updates.currentWord = "";
-                updates.strokes = [];
-                updates.guessed = [];
-                updates.roundEndTimestamp =
-                  Date.now() + timeOffsetRef.current + 30000; // 30s for word selection
-              } else {
-                updates.status = "finished";
-              }
-            }
-
-            tx.update(gameRef, updates);
-            return false;
-          });
-        } catch (e) {}
-        if (!roomDeleted) {
-          try {
-            await addDoc(collection(db, "games", id as string, "messages"), {
-              isSystem: true,
-              systemType: "leave",
-              text: `${
-                auth.currentUser?.displayName || "A player"
-              } left the game`,
-              timestamp: serverTimestamp(),
-            });
-          } catch (e) {}
-        }
-      })();
+      leaveGameRoom(true).catch(() => {});
     };
   }, [id, userId]);
 
@@ -1084,6 +1420,8 @@ export default function GameRoom() {
 
   const handleCustomWordSubmit = async () => {
     const w = customWord.trim().toUpperCase();
+    playSound(require("../../assets/sounds/word.mp3"));
+
     if (!w) return;
     if (w.length < 2 || w.length > 20) {
       showToast({ message: "Word must be 2-20 characters", type: "error" });
@@ -1107,7 +1445,7 @@ export default function GameRoom() {
   if (loading || isExiting) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#4F46E5" />
+        <Preloader />
         <Text style={styles.loadingText}>
           {isExiting ? "Exiting..." : "Loading Game Room..."}
         </Text>
@@ -1144,12 +1482,14 @@ export default function GameRoom() {
           <View style={styles.header}>
             <TouchableOpacity
               onPress={() => {
+                playSound(require("../../assets/sounds/click.mp3"));
                 Alert.alert("Exit Game", "Leave this room?", [
                   { text: "Cancel", style: "cancel" },
                   {
                     text: "Exit",
                     style: "destructive",
-                    onPress: () => {
+                    onPress: async () => {
+                      await leaveGameRoom(true).catch(() => {});
                       setIsExiting(true);
                       playSound(require("../../assets/sounds/exit.mp3"));
                       setTimeout(() => router.replace("/"), 100);
@@ -1160,7 +1500,7 @@ export default function GameRoom() {
               style={styles.exitButton}
               hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
             >
-              <Text style={styles.exitText}>Exit</Text>
+              <Ionicons name="exit" size={20} color="#B91C1C" />
             </TouchableOpacity>
             {remainingSeconds !== null && (
               <View style={styles.timerBadge}>
@@ -1172,17 +1512,18 @@ export default function GameRoom() {
             )}
             {/* <View style={styles.headerCenter}> */}
             <View style={styles.roomBar}>
-              <Text style={styles.roomText}>Code: {id}</Text>
+              <Text style={styles.roomText}>{id}</Text>
               <TouchableOpacity
                 onPress={copyRoomIdToClipboard}
                 style={styles.copyButton}
               >
-                <Ionicons name="copy" size={18} color="#374151" />
+                <Ionicons name="copy" size={16} color="#374151" />
               </TouchableOpacity>
             </View>
             <View style={styles.roundBadge}>
               <Text style={styles.roundText}>
-                {gameData?.round ?? 0} /{" "}
+                {(gameData?.round - 1)?.toString() ?? 0}.
+                {calculateCurrentTurn()} /{" "}
                 {gameData?.maxRounds ?? TOTAL_ROUNDS_FALLBACK}
               </Text>
             </View>
@@ -1223,7 +1564,10 @@ export default function GameRoom() {
                         Choose a word to draw
                       </Text>
                       <TouchableOpacity
-                        onPress={() => setRefreshKey((k) => k + 1)}
+                        onPress={() => {
+                          setRefreshKey((k) => k + 1);
+                          playSound(require("../../assets/sounds/click.mp3"));
+                        }}
                         style={styles.shuffleButton}
                       >
                         <Ionicons name="shuffle" size={18} color="#4B5563" />
@@ -1237,6 +1581,9 @@ export default function GameRoom() {
                           style={styles.wordOption}
                           onPress={async () => {
                             try {
+                              playSound(
+                                require("../../assets/sounds/word.mp3"),
+                              );
                               const gameRef = doc(db, "games", id as string);
                               const roundEnd = getServerTime() + 120000;
                               await updateDoc(gameRef, {
@@ -1268,7 +1615,9 @@ export default function GameRoom() {
                         />
                         <TouchableOpacity
                           style={styles.customSubmitBtn}
-                          onPress={handleCustomWordSubmit}
+                          onPress={() => {
+                            handleCustomWordSubmit();
+                          }}
                         >
                           <Ionicons name="checkmark" size={20} color="white" />
                         </TouchableOpacity>
@@ -1464,7 +1813,10 @@ export default function GameRoom() {
             <View style={styles.playersFooter}>
               <TouchableOpacity
                 style={styles.inviteButton}
-                onPress={() => setShowInviteModal(true)}
+                onPress={() => {
+                  setShowInviteModal(true);
+                  playSound(require("../../assets/sounds/click.mp3"));
+                }}
               >
                 <Text style={styles.inviteText}>Invite Friends</Text>
               </TouchableOpacity>
@@ -1512,18 +1864,21 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   loadingText: {
-    marginTop: 10,
+    marginTop: -20,
     color: "#666",
   },
   header: {
     flexDirection: "row",
     alignItems: "center",
-    padding: 6,
+    justifyContent: "space-between",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
     paddingTop: 40,
     backgroundColor: "#fbbf24",
     borderBottomWidth: 2,
     borderBottomColor: "#333",
-    justifyContent: "space-evenly",
+    gap: 8,
+    flexWrap: "nowrap",
   },
   headerTitle: {
     fontSize: 16,
@@ -1614,59 +1969,65 @@ const styles = StyleSheet.create({
     gap: 0,
   },
   roomBar: {
-    // marginLeft: 6,
-    flexDirection: "row",
-    alignItems: "center",
-    // gap: 8,
     backgroundColor: "#FEF3C7",
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
     borderWidth: 1,
     borderColor: "#92400E",
+    alignItems: "center",
+    justifyContent: "space-between",
+    flexDirection: "row",
+    flex: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 8,
+    minWidth: 50,
+    maxWidth: 80,
   },
   roomText: {
     color: "#333",
-    fontSize: 16,
+    fontSize: 14,
+    fontWeight: "600",
   },
   copyButton: {
-    padding: 6,
+    padding: 4,
+    marginLeft: 4,
   },
   roundBadge: {
     backgroundColor: "#DBEAFE",
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 10,
-    // marginLeft: 6,
     borderWidth: 1,
     borderColor: "#333",
+    justifyContent: "center",
+    alignItems: "center",
+    flex: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    borderRadius: 8,
+    minWidth: 60,
+    maxWidth: 80,
   },
   roundText: {
     color: "#4338CA",
     fontWeight: "700",
-    fontSize: 16,
+    fontSize: 14,
   },
   playersToggle: {
-    padding: 8,
-    paddingHorizontal: 10,
-    // marginLeft: 8,
+    padding: 6,
+    paddingHorizontal: 8,
     backgroundColor: "#E5E7EB",
     borderRadius: 8,
     borderWidth: 1,
     borderColor: "#333",
+    flexShrink: 0,
   },
   exitButton: {
-    paddingHorizontal: 10,
+    paddingHorizontal: 8,
     paddingVertical: 8,
     backgroundColor: "#FEE2E2",
     borderRadius: 8,
-    // marginRight: 8,
     borderWidth: 1,
     borderColor: "#333",
-  },
-  exitText: {
-    color: "#B91C1C",
-    fontWeight: "700",
+    flexShrink: 0,
+    justifyContent: "center",
+    alignItems: "center",
   },
   timerBadge: {
     backgroundColor: "#DBEAFE",
@@ -1691,7 +2052,8 @@ const styles = StyleSheet.create({
     position: "absolute",
     right: 0,
     top: 40,
-    width: 300,
+    width: "100%",
+    maxWidth: 280,
     bottom: 20,
     backgroundColor: "white",
     borderTopLeftRadius: 12,

@@ -498,12 +498,12 @@ const styles = StyleSheet.create({
   avatarInitials: {
     fontSize: 20,
     fontWeight: "bold",
-    color: "white",
+    color: "#333",
   },
   avatarInitialsLarge: {
     fontSize: 32,
     fontWeight: "bold",
-    color: "white",
+    color: "#333",
   },
   rankBadge: {
     position: "absolute",
@@ -611,7 +611,7 @@ const styles = StyleSheet.create({
   restAvatarText: {
     fontSize: 14,
     fontWeight: "bold",
-    color: "white",
+    color: "#333",
   },
   restName: {
     flex: 1,

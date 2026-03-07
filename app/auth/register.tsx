@@ -102,6 +102,19 @@ export default function Register() {
             <Text style={styles.buttonText}>Sign Up</Text>
           )}
         </TouchableOpacity>
+
+        <TouchableOpacity onPress={() => router.push("/auth/login")}>
+          <Text style={styles.linkText}>
+            Already have an account?
+            <Text
+              style={{ color: "#ffeeb0", fontWeight: "bold" }}
+              onPress={() => router.replace("/auth/login")}
+            >
+              {" "}
+              Sign In
+            </Text>{" "}
+          </Text>
+        </TouchableOpacity>
       </View>
     </ImageBackground>
   );
@@ -141,6 +154,12 @@ const styles = StyleSheet.create({
     width: "35%",
   },
   buttonText: { color: "white", fontWeight: "bold", fontSize: 16 },
-  linkButton: { marginTop: 20, marginLeft: 4, alignItems: "flex-start" },
-  linkText: { color: "#fff", fontWeight: "bold", fontSize: 16 },
+  linkText: {
+    color: "#fff",
+    fontWeight: "bold",
+    fontSize: 16,
+    textAlign: "center",
+    alignSelf: "flex-start",
+    marginTop: 20,
+  },
 });

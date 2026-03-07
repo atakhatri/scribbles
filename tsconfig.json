@@ -5,6 +5,8 @@
     "jsx": "react-native",
     "moduleResolution": "bundler",
     "skipLibCheck": true,
+    "ignoreDeprecations": "6.0",
+    "baseUrl": ".",
     "rootDir": ".",
     "noImplicitAny": false,
     "paths": {
@@ -16,8 +18,12 @@
     "app/**/*.tsx",
     "components/**/*.ts",
     "components/**/*.tsx",
+    "context/**/*.ts",
+    "context/**/*.tsx",
     "data/**/*.ts",
     "data/**/*.tsx",
+    "utils/**/*.ts",
+    "utils/**/*.tsx",
     "assets/**/*.ts",
     "assets/**/*.tsx",
     ".expo/types/**/*.ts",
@@ -26,5 +32,5 @@
     "*.ts",
     "*.tsx"
   ],
-  "exclude": ["node_modules", "dist", "build"]
+  "exclude": ["node_modules", "dist", "build", "functions"]
 }

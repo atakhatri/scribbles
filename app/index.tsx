@@ -1,6 +1,7 @@
 import GRADIENTS from "@/data/gradients";
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useFocusEffect } from "@react-navigation/native";
 import { LinearGradient } from "expo-linear-gradient";
 import { usePathname, useRouter } from "expo-router";
 import { onAuthStateChanged, User } from "firebase/auth";
@@ -9,6 +10,7 @@ import {
   arrayUnion,
   collection,
   deleteDoc,
+  deleteField,
   doc,
   getDoc,
   getDocs,
@@ -19,10 +21,11 @@ import {
   updateDoc,
   where,
 } from "firebase/firestore";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Animated,
+  BackHandler,
   Dimensions,
   Easing,
   ImageBackground,
@@ -118,6 +121,7 @@ export default function Index() {
   const [isRefreshingFriends, setIsRefreshingFriends] = useState(false);
   const [activeGameId, setActiveGameId] = useState<string | null>(null);
   const [activeGamePlayers, setActiveGamePlayers] = useState<any[]>([]);
+  const [activeGameHostId, setActiveGameHostId] = useState<string | null>(null);
   const [avatarGradientIndex, setAvatarGradientIndex] = useState<number>(-1);
 
   const [createRoomModalVisible, setCreateRoomModalVisible] = useState(false);
@@ -134,6 +138,9 @@ export default function Index() {
   const friendsPanelHeight = useRef(
     new Animated.Value(MIN_FRIENDS_HEIGHT),
   ).current;
+
+  // Canvas height animation
+  const canvasHeight = useRef(new Animated.Value(400)).current;
 
   // Layout Refs for Drag Constraints
   const headerHeightRef = useRef(0);
@@ -156,6 +163,158 @@ export default function Index() {
     outputRange: [100, MAX_FRIENDS_HEIGHT + 20],
     extrapolate: "clamp",
   });
+
+  // Native-like Android back behavior on home screen.
+  useFocusEffect(
+    useCallback(() => {
+      const onBackPress = () => {
+        if (createRoomModalVisible) {
+          setCreateRoomModalVisible(false);
+          return true;
+        }
+
+        if (isFriendsExpanded) {
+          Animated.spring(friendsPanelHeight, {
+            toValue: MIN_FRIENDS_HEIGHT,
+            useNativeDriver: false,
+            friction: 8,
+            tension: 40,
+          }).start(({ finished }) => {
+            if (finished) {
+              setIsFriendsExpanded(false);
+            }
+          });
+          return true;
+        }
+
+        BackHandler.exitApp();
+        return true;
+      };
+
+      const sub = BackHandler.addEventListener(
+        "hardwareBackPress",
+        onBackPress,
+      );
+      return () => sub.remove();
+    }, [createRoomModalVisible, isFriendsExpanded, friendsPanelHeight]),
+  );
+
+  // Calculate canvas height based on screen size and friends panel position
+  useEffect(() => {
+    const updateCanvasHeight = (friendsHeight: number) => {
+      const screenHeight = Dimensions.get("window").height;
+      const headerHeight = headerHeightRef.current || 80;
+      const joinPanelHeight = joinPanelHeightRef.current || 70;
+
+      const MIN_CANVAS_HEIGHT = 200; // Minimum canvas height
+      const MAX_CANVAS_HEIGHT = 600; // Maximum canvas height
+      const PADDING = 40; // Total padding/margins
+
+      const availableSpace =
+        screenHeight -
+        headerHeight -
+        joinPanelHeight -
+        friendsHeight -
+        insets.top -
+        insets.bottom -
+        PADDING;
+
+      const targetHeight = Math.max(
+        MIN_CANVAS_HEIGHT,
+        Math.min(MAX_CANVAS_HEIGHT, availableSpace),
+      );
+
+      return targetHeight;
+    };
+
+    // Listen to friendsPanelHeight changes
+    const listenerId = friendsPanelHeight.addListener(({ value }) => {
+      const targetHeight = updateCanvasHeight(value);
+      Animated.spring(canvasHeight, {
+        toValue: targetHeight,
+        useNativeDriver: false,
+        friction: 8,
+        tension: 40,
+      }).start();
+    });
+
+    // Set initial height
+    const initialHeight = updateCanvasHeight(MIN_FRIENDS_HEIGHT);
+    canvasHeight.setValue(initialHeight);
+
+    // Handle screen dimension changes (rotation, etc.)
+    const dimensionSubscription = Dimensions.addEventListener("change", () => {
+      const currentFriendsHeight =
+        (friendsPanelHeight as any)._value || MIN_FRIENDS_HEIGHT;
+      const newHeight = updateCanvasHeight(currentFriendsHeight);
+      Animated.spring(canvasHeight, {
+        toValue: newHeight,
+        useNativeDriver: false,
+        friction: 8,
+        tension: 40,
+      }).start();
+    });
+
+    return () => {
+      friendsPanelHeight.removeListener(listenerId);
+      dimensionSubscription?.remove();
+    };
+  }, [insets.top, insets.bottom]);
+
+  const cleanupUserFromOpenGames = async (uid: string) => {
+    try {
+      const gamesRef = collection(db, "games");
+      const gamesQuery = query(
+        gamesRef,
+        where("players", "array-contains", uid),
+      );
+      const gamesSnap = await getDocs(gamesQuery);
+
+      for (const gameDoc of gamesSnap.docs) {
+        const data = gameDoc.data() as any;
+        const players = Array.isArray(data.players) ? data.players : [];
+        const updatedPlayers = players.filter((p: any) => {
+          const pid = typeof p === "string" ? p : p?.uid;
+          return pid !== uid;
+        });
+
+        if (updatedPlayers.length === players.length) continue;
+
+        if (updatedPlayers.length === 0) {
+          await deleteDoc(gameDoc.ref);
+          continue;
+        }
+
+        const updates: any = { players: updatedPlayers };
+
+        if (data.hostId === uid) {
+          const next = updatedPlayers[0];
+          updates.hostId = typeof next === "string" ? next : next.uid;
+        }
+
+        if (data.currentDrawer === uid && data.status === "playing") {
+          const oldIndex = players.findIndex((p: any) => {
+            const pid = typeof p === "string" ? p : p?.uid;
+            return pid === uid;
+          });
+          const nextIndex = oldIndex >= updatedPlayers.length ? 0 : oldIndex;
+          const next = updatedPlayers[nextIndex];
+          const nextUid = typeof next === "string" ? next : next.uid;
+
+          updates.currentDrawer = nextUid;
+          updates.word = "";
+          updates.currentWord = "";
+          updates.strokes = [];
+          updates.guessed = [];
+          updates.roundEndTimestamp = Date.now() + 30000;
+        }
+
+        await updateDoc(gameDoc.ref, updates);
+      }
+    } catch (e) {
+      console.error("Failed to cleanup stale player from open games", e);
+    }
+  };
 
   useEffect(() => {
     setGreetingTemplate(
@@ -254,6 +413,10 @@ export default function Index() {
       setUser(currentUser);
 
       if (currentUser) {
+        // Safety net: when app is reopened on home after force-close,
+        // ensure this user is removed from any lingering active games.
+        await cleanupUserFromOpenGames(currentUser.uid);
+
         // Check if user is in regular users or guestUsers collection
         let docRef = doc(db, "users", currentUser.uid);
         let docSnap = await getDoc(docRef);
@@ -350,9 +513,13 @@ export default function Index() {
       async (docSnap) => {
         if (docSnap.exists()) {
           const data = docSnap.data();
+          setActiveGameHostId((data as any).hostId || null);
 
-          // Auto-navigate if game starts
-          if (data.status === "playing" && pathname === "/") {
+          // Auto-navigate when host enters lobby, or when game starts.
+          if (
+            ((data as any).lobbyEnteredAt || data.status === "playing") &&
+            pathname === "/"
+          ) {
             router.push(`/game/${activeGameId}`);
             setActiveGameId(null);
             return;
@@ -360,50 +527,65 @@ export default function Index() {
 
           // Update players list for waiting lobby
           if (data.players && Array.isArray(data.players)) {
-            const pIds = data.players.map((p: any) =>
-              typeof p === "string" ? p : p.uid,
-            );
+            const pIds = data.players
+              .map((p: any) => (typeof p === "string" ? p : p.uid))
+              .filter(Boolean);
 
-            // Fetch from both users and guestUsers collections
-            const usersRef = collection(db, "users");
-            const guestUsersRef = collection(db, "guestUsers");
+            if (pIds.length === 0) {
+              setActiveGamePlayers([]);
+            } else {
+              // Fetch from both users and guestUsers collections
+              const usersRef = collection(db, "users");
+              const guestUsersRef = collection(db, "guestUsers");
 
-            const usersQuery = query(
-              usersRef,
-              where("__name__", "in", pIds.slice(0, 10)),
-            );
-            const guestUsersQuery = query(
-              guestUsersRef,
-              where("__name__", "in", pIds.slice(0, 10)),
-            );
+              const usersQuery = query(
+                usersRef,
+                where("__name__", "in", pIds.slice(0, 10)),
+              );
+              const guestUsersQuery = query(
+                guestUsersRef,
+                where("__name__", "in", pIds.slice(0, 10)),
+              );
 
-            const [usersSnap, guestUsersSnap] = await Promise.all([
-              getDocs(usersQuery),
-              getDocs(guestUsersQuery),
-            ]);
+              const [usersSnap, guestUsersSnap] = await Promise.all([
+                getDocs(usersQuery),
+                getDocs(guestUsersQuery),
+              ]);
 
-            const pData = [
-              ...usersSnap.docs.map((d) => ({ id: d.id, ...d.data() })),
-              ...guestUsersSnap.docs.map((d) => ({ id: d.id, ...d.data() })),
-            ];
+              const pData = [
+                ...usersSnap.docs.map((d) => ({ id: d.id, ...d.data() })),
+                ...guestUsersSnap.docs.map((d) => ({ id: d.id, ...d.data() })),
+              ];
 
-            setActiveGamePlayers(pData);
+              setActiveGamePlayers(pData);
+            }
           }
 
           // Sync rounds from game to local state
           if (data.maxRounds) setSelectedRounds(data.maxRounds);
+        } else {
+          // Lobby was removed (e.g. host deleted room) -> kick everyone out of waiting state.
+          setActiveGameId(null);
+          setActiveGamePlayers([]);
+          setShowLobby(false);
+          setShowJoin(true);
+          showToast({ message: "Lobby was closed by host", type: "info" });
         }
       },
     );
     return () => unsub();
-  }, [activeGameId, pathname]);
+  }, [activeGameId, pathname, showToast]);
 
   const fetchTopFriends = async (allFriendIds: string[]) => {
     if (allFriendIds.length === 0) {
       setFriendsPreview([]);
       return;
     }
-    const idsToFetch = allFriendIds.slice(0, 10); // Fetch up to 10 to sort
+    const idsToFetch = allFriendIds.slice(0, 10).filter(Boolean); // Fetch up to 10 to sort
+    if (idsToFetch.length === 0) {
+      setFriendsPreview([]);
+      return;
+    }
     try {
       // First, try to fetch from users collection
       const usersRef = collection(db, "users");
@@ -440,26 +622,54 @@ export default function Index() {
   };
 
   const handleAcceptInvite = async () => {
+    playSound(require("../assets/sounds/accept.mp3"));
     if (!gameInvite || !user) return;
     try {
-      const userRef = doc(db, "users", user.uid);
+      // Check which collection the user is in
+      let userRef = doc(db, "users", user.uid);
+      let userDoc = await getDoc(userRef);
+
+      if (!userDoc.exists()) {
+        userRef = doc(db, "guestUsers", user.uid);
+      }
+
       await updateDoc(userRef, {
         gameInvites: arrayRemove(gameInvite),
       });
+
+      const gameRef = doc(db, "games", gameInvite.roomId);
+      await updateDoc(gameRef, {
+        players: arrayUnion(user.uid),
+        [`scores.${user.uid}`]: 0,
+        lastUpdated: serverTimestamp(),
+      });
+
       setGameInvite(null);
-      router.push(`/game/${gameInvite.roomId}`);
+      setActiveGameId(gameInvite.roomId);
     } catch (e) {
       console.error(e);
     }
   };
 
   const handleDeclineInvite = async () => {
+    playSound(require("../assets/sounds/decline.mp3"));
     if (!gameInvite || !user) return;
-    const userRef = doc(db, "users", user.uid);
-    await updateDoc(userRef, {
-      gameInvites: arrayRemove(gameInvite),
-    });
-    setGameInvite(null);
+    try {
+      // Check which collection the user is in
+      let userRef = doc(db, "users", user.uid);
+      let userDoc = await getDoc(userRef);
+
+      if (!userDoc.exists()) {
+        userRef = doc(db, "guestUsers", user.uid);
+      }
+
+      await updateDoc(userRef, {
+        gameInvites: arrayRemove(gameInvite),
+      });
+      setGameInvite(null);
+    } catch (e) {
+      console.error("Error declining invite", e);
+    }
   };
 
   // Auto-revoke invite after 15 seconds
@@ -482,6 +692,7 @@ export default function Index() {
         gameId = Math.random().toString(36).substring(2, 6).toUpperCase();
         await setDoc(doc(db, "games", gameId), {
           status: "waiting",
+          lobbyEnteredAt: null,
           currentDrawer: user!.uid,
           currentWord: "",
           round: 1,
@@ -496,14 +707,27 @@ export default function Index() {
         setActiveGameId(gameId);
       }
 
-      await updateDoc(doc(db, "users", friendId), {
-        gameInvites: arrayUnion({
-          roomId: gameId,
-          inviterName: username,
-          timestamp: Date.now(),
-        }),
-      });
-      showToast({ message: "Friend invited to join!", type: "success" });
+      // Check which collection the friend is in
+      let friendRef = doc(db, "users", friendId);
+      let friendDoc = await getDoc(friendRef);
+
+      if (!friendDoc.exists()) {
+        friendRef = doc(db, "guestUsers", friendId);
+        friendDoc = await getDoc(friendRef);
+      }
+
+      if (friendDoc.exists()) {
+        await updateDoc(friendRef, {
+          gameInvites: arrayUnion({
+            roomId: gameId,
+            inviterName: username,
+            timestamp: Date.now(),
+          }),
+        });
+        showToast({ message: "Friend invited to join!", type: "success" });
+      } else {
+        showToast({ message: "Friend not found", type: "error" });
+      }
     } catch (e) {
       console.error("Quick invite failed", e);
       showToast({ message: "Failed to send invite", type: "error" });
@@ -511,16 +735,25 @@ export default function Index() {
   };
 
   const handleCancelGame = async () => {
-    if (!activeGameId) return;
+    if (!activeGameId || !user) return;
+    if (activeGameHostId !== user.uid) return;
+
     showAlert({
       title: "Cancel Game",
       message: "Stop waiting and delete this room?",
       buttons: [
-        { text: "Keep Waiting", style: "cancel" },
+        {
+          text: "Keep Waiting",
+          style: "cancel",
+          onPress: () => {
+            playSound(require("../assets/sounds/lock.mp3"));
+          },
+        },
         {
           text: "Delete Room",
           style: "destructive",
           onPress: async () => {
+            playSound(require("../assets/sounds/lock.mp3"));
             try {
               await deleteDoc(doc(db, "games", activeGameId));
               setActiveGameId(null);
@@ -532,6 +765,63 @@ export default function Index() {
         },
       ],
     });
+  };
+
+  const handleLeaveLobby = async () => {
+    if (!activeGameId || !user) return;
+
+    showAlert({
+      title: "Leave Lobby",
+      message: "Leave this lobby?",
+      buttons: [
+        {
+          text: "Keep Waiting",
+          style: "cancel",
+          onPress: () => {
+            playSound(require("../assets/sounds/lock.mp3"));
+          },
+        },
+        {
+          text: "Leave",
+          style: "destructive",
+          onPress: async () => {
+            playSound(require("../assets/sounds/lock.mp3"));
+            try {
+              await updateDoc(doc(db, "games", activeGameId), {
+                players: arrayRemove(user.uid),
+                [`scores.${user.uid}`]: deleteField(),
+                lastUpdated: serverTimestamp(),
+              });
+            } catch {
+              // Ignore if room is already deleted.
+            } finally {
+              setActiveGameId(null);
+              setActiveGamePlayers([]);
+              setShowLobby(false);
+              setShowJoin(true);
+            }
+          },
+        },
+      ],
+    });
+  };
+
+  const handleEnterGameForAll = async () => {
+    if (!activeGameId || !user) return;
+    if (activeGameHostId !== user.uid) {
+      showToast({ message: "Waiting for host to enter game", type: "info" });
+      return;
+    }
+
+    try {
+      await updateDoc(doc(db, "games", activeGameId), {
+        lobbyEnteredAt: Date.now(),
+        lastUpdated: serverTimestamp(),
+      });
+    } catch (e) {
+      console.error("Failed to enter lobby for all", e);
+      showToast({ message: "Could not enter game", type: "error" });
+    }
   };
 
   const updateLobbyRounds = async (delta: number) => {
@@ -596,6 +886,7 @@ export default function Index() {
         pan.flattenOffset();
         // Detect tap vs drag
         if (Math.abs(gestureState.dx) < 5 && Math.abs(gestureState.dy) < 5) {
+          playSound(require("../assets/sounds/lock.mp3"));
           setCreateRoomModalVisible(true);
         } else {
           // Snap to nearest edge
@@ -627,6 +918,7 @@ export default function Index() {
   ).current;
 
   const isFriendsExpandedRef = useRef(isFriendsExpanded);
+  const friendsDragStartedExpandedRef = useRef(isFriendsExpanded);
   useEffect(() => {
     isFriendsExpandedRef.current = isFriendsExpanded;
   }, [isFriendsExpanded]);
@@ -639,6 +931,7 @@ export default function Index() {
         return Math.abs(gestureState.dy) > 5 || Math.abs(gestureState.dx) > 5;
       },
       onPanResponderGrant: () => {
+        friendsDragStartedExpandedRef.current = isFriendsExpandedRef.current;
         friendsPanelHeight.extractOffset();
         if (!isFriendsExpandedRef.current) {
           setIsFriendsExpanded(true);
@@ -666,7 +959,7 @@ export default function Index() {
               currentHeight > (MIN_FRIENDS_HEIGHT + MAX_FRIENDS_HEIGHT) / 2;
         }
 
-        if (shouldOpen !== isFriendsExpandedRef.current) {
+        if (shouldOpen !== friendsDragStartedExpandedRef.current) {
           playSound(require("../assets/sounds/friendsMenu.mp3"));
         }
 
@@ -707,6 +1000,7 @@ export default function Index() {
 
       await setDoc(doc(db, "games", randomCode), {
         status: "waiting",
+        lobbyEnteredAt: null,
         currentDrawer: user.uid,
         currentWord: "",
         round: 1,
@@ -818,36 +1112,9 @@ export default function Index() {
               (headerHeightRef.current = e.nativeEvent.layout.height)
             }
           >
-            <Text style={styles.welcomeText}>
-              {greetingTemplate.replace("{name}", username)}
-            </Text>
-            <TouchableOpacity onPress={() => router.push("/pages/profile")}>
-              <LinearGradient
-                colors={
-                  avatarGradientIndex >= 0 &&
-                  avatarGradientIndex < AVATAR_GRADIENTS.length
-                    ? AVATAR_GRADIENTS[avatarGradientIndex]
-                    : getAvatarGradient(user.uid)
-                }
-                style={styles.profileIcon}
-              >
-                <Text style={styles.profileIconText}>
-                  {username[0]?.toUpperCase() || "U"}
-                </Text>
-              </LinearGradient>
-            </TouchableOpacity>
-          </View>
-
-          <ScrollView
-            style={{ flex: 1 }}
-            contentContainerStyle={styles.scrollContent}
-            showsVerticalScrollIndicator={false}
-          >
-            {/* <Text style={styles.title}>Scribbles</Text> */}
-
             {showJoin && (
               <Animated.View
-                style={[styles.joinCard, { opacity: joinOpacity }]}
+                style={[styles.headerJoinCard, { opacity: joinOpacity }]}
                 onLayout={(e) =>
                   (joinPanelHeightRef.current = e.nativeEvent.layout.height)
                 }
@@ -871,7 +1138,34 @@ export default function Index() {
                 </View>
               </Animated.View>
             )}
-            {showJoin && !isFriendsExpanded && <HomeCanvas />}
+            <TouchableOpacity
+              onPress={() => {
+                router.push("/pages/profile");
+                playSound(require("../assets/sounds/lock.mp3"));
+              }}
+            >
+              <LinearGradient
+                colors={
+                  avatarGradientIndex >= 0 &&
+                  avatarGradientIndex < AVATAR_GRADIENTS.length
+                    ? AVATAR_GRADIENTS[avatarGradientIndex]
+                    : getAvatarGradient(user.uid)
+                }
+                style={styles.profileIcon}
+              >
+                <Text style={styles.profileIconText}>
+                  {username[0]?.toUpperCase() || "U"}
+                </Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView
+            style={{ flex: 1 }}
+            contentContainerStyle={styles.scrollContent}
+            showsVerticalScrollIndicator={false}
+          >
+            {showJoin && <HomeCanvas height={canvasHeight} />}
 
             {/* Waiting Group Panel */}
             {showLobby && (
@@ -890,15 +1184,23 @@ export default function Index() {
 
                   <View style={[styles.roundsSelector, { marginBottom: 15 }]}>
                     <Text style={styles.roundsLabel}>Rounds</Text>
-                    <View style={styles.stepper}>
-                      <TouchableOpacity onPress={() => updateLobbyRounds(-1)}>
-                        <Ionicons name="remove-circle" size={24} color="#333" />
-                      </TouchableOpacity>
+                    {activeGameHostId === user?.uid ? (
+                      <View style={styles.stepper}>
+                        <TouchableOpacity onPress={() => updateLobbyRounds(-1)}>
+                          <Ionicons
+                            name="remove-circle"
+                            size={24}
+                            color="#333"
+                          />
+                        </TouchableOpacity>
+                        <Text style={styles.roundsText}>{selectedRounds}</Text>
+                        <TouchableOpacity onPress={() => updateLobbyRounds(1)}>
+                          <Ionicons name="add-circle" size={24} color="#333" />
+                        </TouchableOpacity>
+                      </View>
+                    ) : (
                       <Text style={styles.roundsText}>{selectedRounds}</Text>
-                      <TouchableOpacity onPress={() => updateLobbyRounds(1)}>
-                        <Ionicons name="add-circle" size={24} color="#333" />
-                      </TouchableOpacity>
-                    </View>
+                    )}
                   </View>
                 </View>
 
@@ -937,17 +1239,33 @@ export default function Index() {
                   </TouchableOpacity>
                 </View>
                 <View style={styles.waitingBtnRow}>
-                  <TouchableOpacity
-                    style={styles.cancelGameBtn}
-                    onPress={handleCancelGame}
-                  >
-                    <Text style={styles.cancelGameText}>Cancel</Text>
-                  </TouchableOpacity>
+                  {activeGameHostId === user?.uid ? (
+                    <TouchableOpacity
+                      style={styles.cancelGameBtn}
+                      onPress={handleCancelGame}
+                    >
+                      <Text style={styles.cancelGameText}>Cancel</Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <TouchableOpacity
+                      style={styles.cancelGameBtn}
+                      onPress={handleLeaveLobby}
+                    >
+                      <Text style={styles.cancelGameText}>Leave</Text>
+                    </TouchableOpacity>
+                  )}
                   <TouchableOpacity
                     style={styles.enterGameBtn}
-                    onPress={() => router.push(`/game/${activeGameId}`)}
+                    onPress={() => {
+                      handleEnterGameForAll();
+                      playSound(require("../assets/sounds/gameStart.mp3"));
+                    }}
                   >
-                    <Text style={styles.enterGameText}>Enter Game</Text>
+                    <Text style={styles.enterGameText}>
+                      {activeGameHostId === user?.uid
+                        ? "Enter Game"
+                        : "Waiting for Host"}
+                    </Text>
                   </TouchableOpacity>
                 </View>
               </Animated.View>
@@ -1175,13 +1493,19 @@ export default function Index() {
                 </View>
                 <View style={styles.modalButtons}>
                   <TouchableOpacity
-                    onPress={() => setCreateRoomModalVisible(false)}
+                    onPress={() => {
+                      setCreateRoomModalVisible(false);
+                      playSound(require("../assets/sounds/click.mp3"));
+                    }}
                     style={styles.cancelBtn}
                   >
                     <Text style={styles.cancelText}>Cancel</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
-                    onPress={handleCreateRoom}
+                    onPress={() => {
+                      handleCreateRoom();
+                      playSound(require("../assets/sounds/click.mp3"));
+                    }}
                     style={styles.confirmBtn}
                   >
                     <Text style={styles.confirmText}>Create</Text>
@@ -1243,7 +1567,7 @@ export default function Index() {
               {isGuestLoading ? (
                 <ActivityIndicator size="small" color="#fff" />
               ) : (
-                <Text style={styles.buttonTextGuest}>Continue as Guest</Text>
+                <Text style={styles.buttonTextGuest}>Guest</Text>
               )}
             </TouchableOpacity>
           </View>
@@ -1257,26 +1581,40 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "transparent" },
   containerTransparent: {
     flex: 1,
-    backgroundColor: "transparent",
+    backgroundColor: "#00000060",
     justifyContent: "center",
     alignItems: "center",
   },
   backgroundImage: { flex: 1 },
   header: {
     flexDirection: "row",
-    justifyContent: "space-between",
+    justifyContent: "flex-end",
     alignItems: "center",
-    paddingTop: 20,
+    paddingTop: 10,
     padding: 10,
+    gap: 10,
   },
-  welcomeText: {
-    color: "white",
-    fontSize: 18,
-    fontWeight: "bold",
-    backgroundColor: "rgba(0, 0, 0, 0.1)",
-    padding: 8,
-    borderRadius: 10,
+  headerJoinCard: {
+    backgroundColor: "#dddddd95",
+    borderRadius: 20,
+    padding: 6,
+    flex: 1,
   },
+  // greetingContainer: {
+  //   flex: 1,
+  //   overflow: "hidden",
+  //   marginRight: 10,
+  //   justifyContent: "center",
+  //   height: 50,
+  // },
+  // welcomeText: {
+  //   color: "white",
+  //   fontSize: 18,
+  //   fontWeight: "bold",
+  //   backgroundColor: "rgba(0, 0, 0, 0.1)",
+  //   padding: 8,
+  //   borderRadius: 10,
+  // },
   profileIcon: {
     width: 48,
     height: 48,
@@ -1286,9 +1624,9 @@ const styles = StyleSheet.create({
   },
   profileIconText: { color: "#333", fontWeight: "bold", fontSize: 22 },
   content: { flex: 1, justifyContent: "center", padding: 20, width: "90%" },
-  scrollContent: { padding: 10, paddingBottom: 50 },
+  scrollContent: { padding: 0, paddingBottom: 20 },
   title: {
-    fontSize: 64,
+    fontSize: 60,
     fontWeight: "bold",
     color: "white",
     textShadowColor: "rgba(0, 0, 0, 0.75)",
@@ -1311,13 +1649,14 @@ const styles = StyleSheet.create({
     backgroundColor: "#dddddd95",
     borderRadius: 20,
     padding: 6,
-    marginBottom: 20,
+    marginBottom: 10,
+    marginHorizontal: 10,
   },
   input: {
     backgroundColor: "#fff9f2ff",
     padding: 12,
-    borderTopLeftRadius: 12,
-    borderBottomLeftRadius: 12,
+    borderTopLeftRadius: 14,
+    borderBottomLeftRadius: 14,
     fontSize: 16,
     marginBottom: 0,
     color: "#333",
@@ -1330,8 +1669,8 @@ const styles = StyleSheet.create({
   buttonJoin: {
     backgroundColor: "#333",
     padding: 12,
-    borderTopRightRadius: 12,
-    borderBottomRightRadius: 12,
+    borderTopRightRadius: 14,
+    borderBottomRightRadius: 14,
     alignItems: "center",
     borderWidth: 2,
     borderColor: "#333",
@@ -1544,12 +1883,13 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     padding: 10,
     marginBottom: 20,
+    marginHorizontal: 10,
     alignItems: "center",
   },
   waitingUpperRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    width: "100%",
+    width: "95%",
   },
   waitingHeader: {
     alignItems: "flex-start",

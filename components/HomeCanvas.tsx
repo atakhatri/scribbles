@@ -54,7 +54,11 @@ interface Stroke {
   width: number;
 }
 
-export default function HomeCanvas() {
+interface HomeCanvasProps {
+  height?: number | Animated.AnimatedInterpolation<number>;
+}
+
+export default function HomeCanvas({ height }: HomeCanvasProps) {
   const { playSound } = useToast();
   const [currentStroke, setCurrentStroke] = useState<Stroke | null>(null);
   const pointsRef = useRef<{ x: number; y: number }[]>([]);
@@ -71,6 +75,7 @@ export default function HomeCanvas() {
   const togglePersist = () => {
     const newVal = !persistMode;
     setPersistMode(newVal);
+    playSound(require("../assets/sounds/lock.mp3"));
     persistModeRef.current = newVal;
     if (!newVal) setCompletedStrokes([]); // Clear when turning off
   };
@@ -186,7 +191,10 @@ export default function HomeCanvas() {
 
   return (
     <View style={styles.container}>
-      <View style={styles.canvas} {...panResponder.panHandlers}>
+      <Animated.View
+        style={[styles.canvas, height !== undefined && { height }]}
+        {...panResponder.panHandlers}
+      >
         <Svg style={StyleSheet.absoluteFill}>
           {/* Render Completed Strokes (Persisted) */}
           {completedStrokes.map((stroke) => (
@@ -256,25 +264,25 @@ export default function HomeCanvas() {
             </Text>
           </Animated.View>
         )}
+      </Animated.View>
 
-        {/* Toggle Button */}
-        <TouchableOpacity
-          style={styles.toggleButton}
-          onPress={togglePersist}
-          activeOpacity={0.7}
-        >
-          <Ionicons
-            name={persistMode ? "phone-portrait-outline" : "lock-open-outline"}
-            size={20}
-            color="#ffffff90"
-          />
-          {persistMode && (
-            <View style={styles.shakeBadge}>
-              <Ionicons name="flash" size={8} color="#333" />
-            </View>
-          )}
-        </TouchableOpacity>
-      </View>
+      {/* Toggle Button */}
+      <TouchableOpacity
+        style={styles.toggleButton}
+        onPress={togglePersist}
+        activeOpacity={0.7}
+      >
+        <Ionicons
+          name={persistMode ? "phone-portrait-outline" : "lock-open-outline"}
+          size={20}
+          color="#ffffff90"
+        />
+        {persistMode && (
+          <View style={styles.shakeBadge}>
+            <Ionicons name="flash" size={8} color="#333" />
+          </View>
+        )}
+      </TouchableOpacity>
     </View>
   );
 }
@@ -282,13 +290,14 @@ export default function HomeCanvas() {
 const styles = StyleSheet.create({
   container: {
     marginVertical: 0,
-    marginHorizontal: 0,
+    marginHorizontal: 10,
     alignItems: "center",
     justifyContent: "center",
   },
   canvas: {
     width: "100%",
-    height: 540,
+    minHeight: 200,
+    maxHeight: 600,
     backgroundColor: "rgba(255, 255, 255, 0.05)",
     borderRadius: 20,
     borderWidth: 1,
@@ -311,9 +320,10 @@ const styles = StyleSheet.create({
     position: "absolute",
     top: 10,
     right: 10,
-    padding: 8,
+    padding: 12,
     backgroundColor: "rgba(255,255,255,0.1)",
     borderRadius: 20,
+    zIndex: 100,
   },
   shakeBadge: {
     position: "absolute",

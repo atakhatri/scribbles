@@ -35,8 +35,13 @@ export default function InviteFriendsModal({
   roomId: string;
 }) {
   const [friends, setFriends] = useState<any[]>([]);
-  const { showToast } = useToast();
+  const { showToast, playSound } = useToast();
   const [invitedIds, setInviteIds] = useState<string[]>([]);
+
+  const handleClose = () => {
+    playSound(require("../assets/sounds/lock.mp3"));
+    onClose();
+  };
 
   useEffect(() => {
     if (!visible) {
@@ -118,13 +123,13 @@ export default function InviteFriendsModal({
       visible={visible}
       transparent
       animationType="fade"
-      onRequestClose={onClose}
+      onRequestClose={handleClose}
     >
-      <Pressable style={styles.overlay} onPress={onClose}>
+      <Pressable style={styles.overlay} onPress={handleClose}>
         <Pressable style={styles.card} onPress={(e) => e.stopPropagation()}>
           <View style={styles.header}>
             <Text style={styles.title}>Invite Friends</Text>
-            <TouchableOpacity onPress={onClose} style={styles.closeButton}>
+            <TouchableOpacity onPress={handleClose} style={styles.closeButton}>
               <Ionicons name="close" size={24} color="#333" />
             </TouchableOpacity>
           </View>

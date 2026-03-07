@@ -163,9 +163,18 @@ export default function FriendsScreen() {
     ids: string[],
     setFunction: (users: UserProfile[]) => void,
   ) => {
+    if (ids.length === 0) {
+      setFunction([]);
+      return;
+    }
     try {
       // Firestore 'in' query is limited to 10.
-      const idsToCheck = ids.slice(0, 10);
+      const idsToCheck = ids.slice(0, 10).filter(Boolean);
+
+      if (idsToCheck.length === 0) {
+        setFunction([]);
+        return;
+      }
 
       // Query both users and guestUsers collections
       const usersRef = collection(db, "users");

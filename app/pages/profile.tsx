@@ -49,7 +49,7 @@ export default function ProfileScreen() {
   const auth = getAuth();
   const db = getFirestore();
   const user = auth.currentUser;
-  const { showToast, showAlert } = useToast();
+  const { showToast, showAlert, playSound } = useToast();
   const { width } = useWindowDimensions();
 
   const [loading, setLoading] = useState(true);
@@ -186,6 +186,7 @@ export default function ProfileScreen() {
 
   const handleTabChange = (tab: "profile" | "settings") => {
     setActiveTab(tab);
+    playSound(require("../../assets/sounds/lock.mp3"));
     Animated.spring(tabAnim, {
       toValue: tab === "profile" ? 0 : 1,
       useNativeDriver: false,
@@ -195,6 +196,7 @@ export default function ProfileScreen() {
   };
 
   const handleGradientSelect = async (index: number) => {
+    playSound(require("../../assets/sounds/lock.mp3"));
     setSelectedGradientIndex(index);
     if (user) {
       const collection = isGuest ? "guestUsers" : "users";
@@ -277,6 +279,7 @@ export default function ProfileScreen() {
 
   const handleLogout = async () => {
     setShowLogoutModal(true);
+    playSound(require("../../assets/sounds/lock.mp3"));
   };
 
   const confirmLogout = async () => {
@@ -363,6 +366,7 @@ export default function ProfileScreen() {
       const apkUrl = data.apkUrl;
 
       if (remoteVersion !== currentAppVersion) {
+        playSound(require("../../assets/sounds/pop.mp3"));
         showAlert({
           title: "Update Available",
           message: `A new version (${remoteVersion}) is available.\n\nWould you like to download the latest APK?`,
@@ -412,7 +416,10 @@ export default function ProfileScreen() {
 
       <View style={styles.header}>
         <TouchableOpacity
-          onPress={() => router.back()}
+          onPress={() => {
+            router.back();
+            playSound(require("../../assets/sounds/lock.mp3"));
+          }}
           style={styles.backButton}
         >
           <Ionicons name="arrow-back" size={28} color="white" />
@@ -783,13 +790,18 @@ export default function ProfileScreen() {
             </Text>
             <View style={styles.modalButtons}>
               <TouchableOpacity
-                onPress={() => setShowLogoutModal(false)}
+                onPress={() => {
+                  setShowLogoutModal(false);
+                }}
                 style={styles.cancelBtn}
               >
                 <Text style={styles.cancelText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                onPress={confirmLogout}
+                onPress={() => {
+                  confirmLogout();
+                  playSound(require("../../assets/sounds/intro.mp3"));
+                }}
                 style={styles.confirmBtn}
               >
                 <Text style={styles.confirmText}>Log Out</Text>
