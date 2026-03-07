@@ -1,7 +1,14 @@
 import AnimatedPreloader from "@/components/animatedPreloader";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { onAuthStateChanged, User } from "firebase/auth";
-import { doc, updateDoc } from "firebase/firestore";
+import {
+  collection,
+  doc,
+  getDocs,
+  query,
+  updateDoc,
+  where,
+} from "firebase/firestore";
 import { useEffect, useRef, useState } from "react";
 import { Animated, AppState, StyleSheet, View } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -59,43 +66,66 @@ export default function RootLayout() {
   useEffect(() => {
     if (!user) return;
 
-    const userRef = doc(db, "users", user.uid);
+    let userRef: ReturnType<typeof doc>;
+    let intervalId: NodeJS.Timeout;
+    let subscription: any;
 
-    const setOnline = async () => {
-      try {
-        await updateDoc(userRef, {
-          isOnline: true,
-          lastSeen: Date.now(),
-        });
-      } catch (e) {
-        // ignore
-      }
+    const initializeStatusTracker = async () => {
+      // Determine which collection the user belongs to
+      const usersDoc = await getDocs(
+        query(collection(db, "users"), where("__name__", "==", user.uid)),
+      );
+
+      const collectionName = usersDoc.empty ? "guestUsers" : "users";
+      userRef = doc(db, collectionName, user.uid);
+
+      const setOnline = async () => {
+        try {
+          await updateDoc(userRef, {
+            isOnline: true,
+            lastSeen: Date.now(),
+          });
+        } catch (e) {
+          // ignore - document might not exist yet
+        }
+      };
+
+      const setOffline = async () => {
+        try {
+          await updateDoc(userRef, {
+            isOnline: false,
+            lastSeen: Date.now(),
+          });
+        } catch (e) {
+          // ignore
+        }
+      };
+
+      setOnline();
+      intervalId = setInterval(setOnline, 30000); // Heartbeat every 30s
+
+      subscription = AppState.addEventListener("change", (nextAppState) => {
+        if (nextAppState === "active") {
+          setOnline();
+        } else if (nextAppState === "background") {
+          setOffline();
+        }
+      });
     };
 
-    const setOffline = async () => {
-      try {
-        await updateDoc(userRef, {
-          isOnline: false,
-          lastSeen: Date.now(),
-        });
-      } catch (e) {}
-    };
-
-    setOnline();
-    const interval = setInterval(setOnline, 30000); // Heartbeat 30s
-
-    const subscription = AppState.addEventListener("change", (nextAppState) => {
-      if (nextAppState === "active") {
-        setOnline();
-      } else if (nextAppState === "background") {
-        setOffline();
-      }
-    });
+    initializeStatusTracker();
 
     return () => {
-      clearInterval(interval);
-      subscription.remove();
-      setOffline();
+      if (intervalId) clearInterval(intervalId);
+      if (subscription) subscription.remove();
+
+      // Set offline on unmount
+      if (userRef) {
+        updateDoc(userRef, {
+          isOnline: false,
+          lastSeen: Date.now(),
+        }).catch(() => {});
+      }
     };
   }, [user]);
 
@@ -107,8 +137,8 @@ export default function RootLayout() {
             <Stack.Screen name="index" />
             <Stack.Screen name="auth/login" />
             <Stack.Screen name="auth/register" />
-            <Stack.Screen name="profile" />
-            <Stack.Screen name="friends" />
+            <Stack.Screen name="pages/profile" />
+            <Stack.Screen name="pages/friends" />
             <Stack.Screen name="game/[id]" />
           </Stack>
           {splashMounted && (

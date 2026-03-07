@@ -1,3 +1,6 @@
+import { useToast } from "@/context/ToastContext";
+import GRADIENTS from "@/data/gradients";
+import { auth, db } from "@/firebaseConfig";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -24,9 +27,6 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useToast } from "../context/ToastContext";
-import GRADIENTS from "../data/gradients";
-import { auth, db } from "../firebaseConfig";
 
 interface UserProfile {
   id: string;
@@ -35,6 +35,7 @@ interface UserProfile {
   avatarGradientIndex?: number;
   isOnline?: boolean;
   lastSeen?: number;
+  isGuest?: boolean;
 }
 
 const AVATAR_GRADIENTS = GRADIENTS;
@@ -93,35 +94,68 @@ export default function FriendsScreen() {
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedFriends, setSelectedFriends] = useState<string[]>([]);
 
+  // Helper: Determine user collection
+  const getUserCollection = async (
+    userId: string,
+  ): Promise<"users" | "guestUsers"> => {
+    const usersDoc = await getDocs(
+      query(collection(db, "users"), where("__name__", "==", userId)),
+    );
+    return usersDoc.empty ? "guestUsers" : "users";
+  };
+
   // 1. Listen to MY profile changes (Real-time updates for requests)
   useEffect(() => {
     if (!currentUser) return;
     setLoading(true);
 
-    const myDocRef = doc(db, "users", currentUser.uid);
-    const unsubscribe = onSnapshot(myDocRef, async (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        const fIds = data.friends || [];
-        const incIds = data.incomingRequests || [];
-        const outIds = data.outgoingRequests || [];
+    // Check if current user is in users or guestUsers collection
+    const checkAndListen = async () => {
+      let myDocRef = doc(db, "users", currentUser.uid);
+      let docSnap = await getDocs(
+        query(
+          collection(db, "users"),
+          where("__name__", "==", currentUser.uid),
+        ),
+      );
 
-        setMyFriendIds(fIds);
-        setMyIncomingRequestIds(incIds);
-        setMyOutgoingRequestIds(outIds);
-
-        // Fetch full profiles for friends and requests
-        if (fIds.length > 0) await fetchUsersByIds(fIds, setFriends);
-        else setFriends([]);
-
-        if (incIds.length > 0) await fetchUsersByIds(incIds, setRequests);
-        else setRequests([]);
-
-        setLoading(false);
+      if (docSnap.empty) {
+        myDocRef = doc(db, "guestUsers", currentUser.uid);
       }
+
+      const unsubscribe = onSnapshot(myDocRef, async (docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          const fIds = data.friends || [];
+          const incIds = data.incomingRequests || [];
+          const outIds = data.outgoingRequests || [];
+
+          setMyFriendIds(fIds);
+          setMyIncomingRequestIds(incIds);
+          setMyOutgoingRequestIds(outIds);
+
+          // Fetch full profiles for friends and requests
+          if (fIds.length > 0) await fetchUsersByIds(fIds, setFriends);
+          else setFriends([]);
+
+          if (incIds.length > 0) await fetchUsersByIds(incIds, setRequests);
+          else setRequests([]);
+
+          setLoading(false);
+        }
+      });
+
+      return unsubscribe;
+    };
+
+    let unsubscribe: (() => void) | undefined;
+    checkAndListen().then((unsub) => {
+      unsubscribe = unsub;
     });
 
-    return () => unsubscribe();
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
   }, []);
 
   // Helper: Fetch user details from a list of IDs
@@ -132,13 +166,32 @@ export default function FriendsScreen() {
     try {
       // Firestore 'in' query is limited to 10.
       const idsToCheck = ids.slice(0, 10);
+
+      // Query both users and guestUsers collections
       const usersRef = collection(db, "users");
-      const q = query(usersRef, where("__name__", "in", idsToCheck));
-      const querySnapshot = await getDocs(q);
+      const guestUsersRef = collection(db, "guestUsers");
+
+      const usersQuery = query(usersRef, where("__name__", "in", idsToCheck));
+      const guestUsersQuery = query(
+        guestUsersRef,
+        where("__name__", "in", idsToCheck),
+      );
+
+      const [usersSnapshot, guestUsersSnapshot] = await Promise.all([
+        getDocs(usersQuery),
+        getDocs(guestUsersQuery),
+      ]);
 
       const loadedUsers: UserProfile[] = [];
-      querySnapshot.forEach((doc) => {
+      usersSnapshot.forEach((doc) => {
         loadedUsers.push({ id: doc.id, ...doc.data() } as UserProfile);
+      });
+      guestUsersSnapshot.forEach((doc) => {
+        loadedUsers.push({
+          id: doc.id,
+          isGuest: true,
+          ...doc.data(),
+        } as UserProfile);
       });
 
       // Sort by Last Seen Descending (Most recent first)
@@ -158,26 +211,40 @@ export default function FriendsScreen() {
 
     try {
       const usersRef = collection(db, "users");
+      const guestUsersRef = collection(db, "guestUsers");
       const text = searchText.trim();
 
-      // QUERY 1: Username "Starts With" search
+      // QUERY 1: Username "Starts With" search (both collections)
       const usernameQuery = query(
         usersRef,
         where("username", ">=", text),
         where("username", "<=", text + "\uf8ff"),
       );
+      const guestUsernameQuery = query(
+        guestUsersRef,
+        where("username", ">=", text),
+        where("username", "<=", text + "\uf8ff"),
+      );
 
-      // QUERY 2: Email Exact Match
+      // QUERY 2: Email Exact Match (only regular users - guests don't have searchable emails)
       const emailQuery = query(usersRef, where("email", "==", text));
 
-      const [usernameSnap, emailSnap] = await Promise.all([
+      const [usernameSnap, guestUsernameSnap, emailSnap] = await Promise.all([
         getDocs(usernameQuery),
+        getDocs(guestUsernameQuery),
         getDocs(emailQuery),
       ]);
 
       const foundUsers = new Map<string, UserProfile>();
       usernameSnap.forEach((doc) =>
         foundUsers.set(doc.id, { id: doc.id, ...doc.data() } as UserProfile),
+      );
+      guestUsernameSnap.forEach((doc) =>
+        foundUsers.set(doc.id, {
+          id: doc.id,
+          isGuest: true,
+          ...doc.data(),
+        } as UserProfile),
       );
       emailSnap.forEach((doc) =>
         foundUsers.set(doc.id, { id: doc.id, ...doc.data() } as UserProfile),
@@ -197,8 +264,11 @@ export default function FriendsScreen() {
   const sendRequest = async (targetUserId: string) => {
     if (!currentUser) return;
     try {
-      const myRef = doc(db, "users", currentUser.uid);
-      const targetRef = doc(db, "users", targetUserId);
+      const myCollection = await getUserCollection(currentUser.uid);
+      const targetCollection = await getUserCollection(targetUserId);
+
+      const myRef = doc(db, myCollection, currentUser.uid);
+      const targetRef = doc(db, targetCollection, targetUserId);
 
       await updateDoc(myRef, { outgoingRequests: arrayUnion(targetUserId) });
       await updateDoc(targetRef, {
@@ -215,8 +285,11 @@ export default function FriendsScreen() {
   const acceptRequest = async (requesterId: string) => {
     if (!currentUser) return;
     try {
-      const myRef = doc(db, "users", currentUser.uid);
-      const requesterRef = doc(db, "users", requesterId);
+      const myCollection = await getUserCollection(currentUser.uid);
+      const requesterCollection = await getUserCollection(requesterId);
+
+      const myRef = doc(db, myCollection, currentUser.uid);
+      const requesterRef = doc(db, requesterCollection, requesterId);
 
       await updateDoc(myRef, {
         friends: arrayUnion(requesterId),
@@ -248,11 +321,13 @@ export default function FriendsScreen() {
           style: "destructive",
           onPress: async () => {
             try {
-              const myRef = doc(db, "users", currentUser.uid);
+              const myCollection = await getUserCollection(currentUser.uid);
+              const myRef = doc(db, myCollection, currentUser.uid);
 
               // Process removals in parallel
               const promises = selectedFriends.map(async (friendId) => {
-                const friendRef = doc(db, "users", friendId);
+                const friendCollection = await getUserCollection(friendId);
+                const friendRef = doc(db, friendCollection, friendId);
                 await updateDoc(myRef, { friends: arrayRemove(friendId) });
                 await updateDoc(friendRef, {
                   friends: arrayRemove(currentUser.uid),
@@ -279,7 +354,8 @@ export default function FriendsScreen() {
     if (!currentUser || !inviteToRoomId) return;
     try {
       await sendRequest(friendId); // Reusing sendRequest logic isn't quite right for game invites, let's fix:
-      const targetRef = doc(db, "users", friendId);
+      const targetCollection = await getUserCollection(friendId);
+      const targetRef = doc(db, targetCollection, friendId);
       await updateDoc(targetRef, {
         gameInvites: arrayUnion({
           roomId: inviteToRoomId,
@@ -353,7 +429,7 @@ export default function FriendsScreen() {
 
   return (
     <ImageBackground
-      source={require("../assets/images/friends.jpeg")}
+      source={require("../../assets/images/friends.jpeg")}
       style={styles.backgroundImage}
       resizeMode="cover"
     >
@@ -431,7 +507,9 @@ export default function FriendsScreen() {
                   <View key={user.id} style={styles.userRow}>
                     <View>
                       <Text style={styles.searchName}>{user.username}</Text>
-                      <Text style={styles.searchEmail}>{user.email}</Text>
+                      <Text style={styles.searchEmail}>
+                        {user.isGuest ? "Guest" : user.email}
+                      </Text>
                     </View>
                     {renderActionButton(user)}
                   </View>
@@ -494,16 +572,8 @@ export default function FriendsScreen() {
                           friend.avatarGradientIndex !== undefined &&
                           friend.avatarGradientIndex >= 0 &&
                           friend.avatarGradientIndex < AVATAR_GRADIENTS.length
-                            ? (AVATAR_GRADIENTS[friend.avatarGradientIndex] as [
-                                string,
-                                string,
-                                ...string[],
-                              ])
-                            : (getAvatarGradient(friend.id) as [
-                                string,
-                                string,
-                                ...string[],
-                              ])
+                            ? AVATAR_GRADIENTS[friend.avatarGradientIndex]
+                            : getAvatarGradient(friend.id)
                         }
                         style={styles.avatar}
                       >
@@ -516,7 +586,9 @@ export default function FriendsScreen() {
                       </LinearGradient>
                       <View>
                         <Text style={styles.friendName}>{friend.username}</Text>
-                        <Text style={styles.friendEmail}>{friend.email}</Text>
+                        <Text style={styles.friendEmail}>
+                          {friend.isGuest ? "Guest" : friend.email}
+                        </Text>
                         <Text
                           style={[
                             styles.friendStatusText,

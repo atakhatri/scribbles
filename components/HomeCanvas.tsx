@@ -24,7 +24,8 @@ const COLORS = GRADIENTS;
 const AnimatedPath = Animated.createAnimatedComponent(Path);
 
 // Helper to get a random item from an array
-const getRandom = (arr: any[]) => arr[Math.floor(Math.random() * arr.length)];
+const getRandom = <T,>(arr: readonly T[]): T =>
+  arr[Math.floor(Math.random() * arr.length)];
 
 // Helper to convert points to an SVG path string
 const pointsToSvg = (points: { x: number; y: number }[]) => {
@@ -48,7 +49,7 @@ const pointsToSvg = (points: { x: number; y: number }[]) => {
 
 interface Stroke {
   path: string;
-  gradient: string[];
+  gradient: readonly string[];
   gradientId: string;
   width: number;
 }

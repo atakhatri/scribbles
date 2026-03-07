@@ -1,19 +1,19 @@
-const GRADIENTS = [
-    ["#FF9A9E", "#FECFEF"], // Pink
-    ["#a18cd1", "#fbc2eb"], // Purple
-    ["#84fab0", "#8fd3f4"], // Aqua
-    ["#fccb90", "#d57eeb"], // Sunset
-    ["#e0c3fc", "#8ec5fc"], // Lavender
-    ["#f093fb", "#f5576c"], // Red/Pink
-    ["#4facfe", "#00f2fe"], // Blue
-    ["#43e97b", "#38f9d7"], // Green
-    ["#FF6B6B", "#FFD166"], // Orange/Red
-    ["#a8edea", "#fed6e3"], // Pastel
-    ["#c471ed", "#f64f59"], // Violet/Red
-    ["#00c6fb", "#005bea"], // Deep Blue
-    ["#f83600", "#f9d423"], // Sunset Orange/Yellow
-    ["#6a11cb", "#2575fc"], // Royal Purple/Blue
-    ["#FF5F6D", "#FFC371"], // Peach/Pink
-    ["#20bf55", "#01baef"], // Green/Blue
-];
+const GRADIENTS = [ // lets make this array sorted by colors, first by the first color, then second, etc. to make it easier to find a specific gradient
+    ['#ffffff', '#ffffff'],
+    ['#808080', '#808080'],
+    ['#ffffff50', '#ffffff50'],
+    ['#ff0008', '#ff9159'],
+    ['#6a2bff', '#ffa9e7'],
+    ['#ffcc25', '#ffd490'],
+    ['#18ff6d', '#8fd3f4'],
+    ['#4089ff', '#c2e9fb'],
+    ['#ff00c8', '#ff9a9e', '#fad0c4'],
+    ['#b3ff00', '#edffc3'],
+    ['#ffecd2', '#fcb69f'],
+    ['#ff5cd1', '#9fc2ff'],
+    ['#ff9900', '#ffffff', '#00ff26'],
+    ['#353535', '#ffcc25'],
+    ['#353535', '#e8e8e8'],
+
+] as const;
 export default GRADIENTS;

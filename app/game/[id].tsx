@@ -1,24 +1,29 @@
+import GRADIENTS from "@/data/gradients";
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
+import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
   addDoc,
-  arrayRemove,
   arrayUnion,
   collection,
   deleteDoc,
   doc,
   getDoc,
+  getDocs,
   increment,
   onSnapshot,
+  query,
   runTransaction,
   serverTimestamp,
   setDoc,
   updateDoc,
+  where,
 } from "firebase/firestore";
 import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Animated,
   Easing,
   Keyboard,
@@ -60,6 +65,16 @@ interface GameData {
   roundEndTimestamp?: number;
 }
 
+const AVATAR_GRADIENTS = GRADIENTS;
+
+const getAvatarGradient = (uid: string) => {
+  let hash = 0;
+  for (let i = 0; i < uid.length; i++) {
+    hash = uid.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return AVATAR_GRADIENTS[Math.abs(hash) % AVATAR_GRADIENTS.length];
+};
+
 export default function GameRoom() {
   const { id } = useLocalSearchParams();
   const router = useRouter();
@@ -67,6 +82,7 @@ export default function GameRoom() {
   const userId = auth.currentUser?.uid;
   const [gameData, setGameData] = useState<GameData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isExiting, setIsExiting] = useState(false);
   const [currentColor, setCurrentColor] = useState("#000000");
   const [currentWidth, setCurrentWidth] = useState(3);
 
@@ -99,6 +115,21 @@ export default function GameRoom() {
   const logTimer = (...args: any[]) => {
     if (__DEV__) {
       console.log("[GameTimer]", ...args);
+    }
+  };
+
+  // Helper: Determine user collection
+  const getUserCollection = async (
+    userId: string,
+  ): Promise<"users" | "guestUsers"> => {
+    try {
+      const usersDoc = await getDocs(
+        query(collection(db, "users"), where("__name__", "==", userId)),
+      );
+      return usersDoc.empty ? "guestUsers" : "users";
+    } catch (e) {
+      console.error("Error determining user collection:", e);
+      return "users"; // Default to users on error
     }
   };
 
@@ -202,7 +233,8 @@ export default function GameRoom() {
           const maxScore = allScores.length > 0 ? Math.max(...allScores) : 0;
           const isWinner = myScore > 0 && myScore === maxScore;
 
-          const userRef = doc(db, "users", userId);
+          const userCollection = await getUserCollection(userId);
+          const userRef = doc(db, userCollection, userId);
 
           // Get current recent games to update them
           const userSnap = await getDoc(userRef);
@@ -462,7 +494,13 @@ export default function GameRoom() {
       setCandidateWords([]);
       setCustomWord("");
     }
-  }, [gameData?.currentDrawer, gameData?.word, userId, refreshKey]);
+  }, [
+    gameData?.currentDrawer,
+    gameData?.word,
+    gameData?.status,
+    userId,
+    refreshKey,
+  ]);
 
   // Countdown based on gameData.roundEndTimestamp
   useEffect(() => {
@@ -624,6 +662,7 @@ export default function GameRoom() {
             currentDrawer: nextDrawer,
             status: newStatus,
             roundEndTimestamp: newRoundEnd,
+            lastUpdated: serverTimestamp(),
           };
 
           tx.update(gameRef, updateObj);
@@ -703,19 +742,75 @@ export default function GameRoom() {
     return () => {
       (async () => {
         if (!joined) return;
+        let roomDeleted = false;
         try {
-          await updateDoc(gameRef, { players: arrayRemove(userId) });
-        } catch (e) {}
-        try {
-          await addDoc(collection(db, "games", id as string, "messages"), {
-            isSystem: true,
-            systemType: "leave",
-            text: `${
-              auth.currentUser?.displayName || "A player"
-            } left the game`,
-            timestamp: serverTimestamp(),
+          roomDeleted = await runTransaction(db, async (tx) => {
+            const docSnap = await tx.get(gameRef);
+            if (!docSnap.exists()) return true;
+            const data = docSnap.data();
+            const currentPlayers = data.players || [];
+            const updatedPlayers = currentPlayers.filter((p: any) => {
+              const pid = typeof p === "string" ? p : p.uid;
+              return pid !== userId;
+            });
+
+            if (updatedPlayers.length === 0) {
+              tx.delete(gameRef);
+              return true;
+            }
+
+            const updates: any = { players: updatedPlayers };
+
+            if (data.hostId === userId) {
+              if (updatedPlayers.length > 0) {
+                const next = updatedPlayers[0];
+                updates.hostId = typeof next === "string" ? next : next.uid;
+              }
+            }
+
+            // If the current drawer leaves, pass the turn to the next player
+            if (data.currentDrawer === userId && data.status === "playing") {
+              if (updatedPlayers.length > 0) {
+                const myIndex = currentPlayers.findIndex((p: any) => {
+                  const pid = typeof p === "string" ? p : p.uid;
+                  return pid === userId;
+                });
+                // The player at myIndex is removed, so the next player shifts into that index.
+                // If myIndex was the last one, we wrap to 0.
+                const nextIndex =
+                  myIndex >= updatedPlayers.length ? 0 : myIndex;
+                const nextPlayer = updatedPlayers[nextIndex];
+                const nextUid =
+                  typeof nextPlayer === "string" ? nextPlayer : nextPlayer.uid;
+
+                updates.currentDrawer = nextUid;
+                updates.word = "";
+                updates.currentWord = "";
+                updates.strokes = [];
+                updates.guessed = [];
+                updates.roundEndTimestamp =
+                  Date.now() + timeOffsetRef.current + 30000; // 30s for word selection
+              } else {
+                updates.status = "finished";
+              }
+            }
+
+            tx.update(gameRef, updates);
+            return false;
           });
         } catch (e) {}
+        if (!roomDeleted) {
+          try {
+            await addDoc(collection(db, "games", id as string, "messages"), {
+              isSystem: true,
+              systemType: "leave",
+              text: `${
+                auth.currentUser?.displayName || "A player"
+              } left the game`,
+              timestamp: serverTimestamp(),
+            });
+          } catch (e) {}
+        }
       })();
     };
   }, [id, userId]);
@@ -727,8 +822,15 @@ export default function GameRoom() {
         const promises = (gameData.players || []).map(async (p: any) => {
           if (typeof p === "string") {
             try {
-              const userDoc = await getDoc(doc(db, "users", p));
-              const data = userDoc.exists() ? userDoc.data() : null;
+              // Try users collection first, then guestUsers
+              let userDoc = await getDoc(doc(db, "users", p));
+              let data = userDoc.exists() ? userDoc.data() : null;
+
+              if (!data) {
+                userDoc = await getDoc(doc(db, "guestUsers", p));
+                data = userDoc.exists() ? userDoc.data() : null;
+              }
+
               return {
                 uid: p,
                 displayName:
@@ -790,6 +892,7 @@ export default function GameRoom() {
       // We append ONLY the new stroke to the array.
       await updateDoc(gameRef, {
         strokes: arrayUnion(newStroke),
+        lastUpdated: serverTimestamp(),
       });
     } catch (error) {
       console.error("Error saving stroke:", error);
@@ -865,6 +968,7 @@ export default function GameRoom() {
         roundEndTimestamp: roundEnd,
         word: "",
         currentWord: "",
+        lastUpdated: serverTimestamp(),
       });
     } catch (error) {
       console.error("Error starting game", error);
@@ -970,6 +1074,7 @@ export default function GameRoom() {
           currentDrawer: nextDrawer,
           roundEndTimestamp: newRoundEnd,
           status: newStatus,
+          lastUpdated: serverTimestamp(),
         });
       });
     } catch (e) {
@@ -992,17 +1097,20 @@ export default function GameRoom() {
         currentWord: w,
         roundEndTimestamp: roundEnd,
         guessed: [],
+        lastUpdated: serverTimestamp(),
       });
     } catch (e) {
       console.error("custom word select failed", e);
     }
   };
 
-  if (loading) {
+  if (loading || isExiting) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#4F46E5" />
-        <Text style={styles.loadingText}>Loading Game Room...</Text>
+        <Text style={styles.loadingText}>
+          {isExiting ? "Exiting..." : "Loading Game Room..."}
+        </Text>
       </View>
     );
   }
@@ -1036,21 +1144,18 @@ export default function GameRoom() {
           <View style={styles.header}>
             <TouchableOpacity
               onPress={() => {
-                showAlert({
-                  title: "Exit Game",
-                  message: "Leave this room?",
-                  buttons: [
-                    { text: "Cancel", style: "cancel" },
-                    {
-                      text: "Exit",
-                      style: "destructive",
-                      onPress: () => {
-                        playSound(require("../../assets/sounds/exit.mp3"));
-                        router.replace("/");
-                      },
+                Alert.alert("Exit Game", "Leave this room?", [
+                  { text: "Cancel", style: "cancel" },
+                  {
+                    text: "Exit",
+                    style: "destructive",
+                    onPress: () => {
+                      setIsExiting(true);
+                      playSound(require("../../assets/sounds/exit.mp3"));
+                      setTimeout(() => router.replace("/"), 100);
                     },
-                  ],
-                });
+                  },
+                ]);
               }}
               style={styles.exitButton}
               hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
@@ -1306,7 +1411,39 @@ export default function GameRoom() {
             <View style={styles.playersList}>
               {playersList.map((p: any) => (
                 <View key={p.uid} style={styles.playerRow}>
-                  <Text style={styles.playerName}>{p.displayName}</Text>
+                  <View style={styles.playerAvatarContainer}>
+                    <LinearGradient
+                      colors={
+                        (p.avatarGradientIndex !== undefined &&
+                        p.avatarGradientIndex >= 0 &&
+                        p.avatarGradientIndex < AVATAR_GRADIENTS.length
+                          ? AVATAR_GRADIENTS[p.avatarGradientIndex]
+                          : getAvatarGradient(p.uid)) as any
+                      }
+                      style={styles.playerAvatar}
+                    >
+                      <Text style={styles.playerAvatarText}>
+                        {p.displayName?.[0]?.toUpperCase()}
+                      </Text>
+                    </LinearGradient>
+                    {gameData?.hostId === p.uid && (
+                      <View style={styles.hostCrown}>
+                        <Text style={{ fontSize: 16 }}>👑</Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text
+                    style={[
+                      styles.playerName,
+                      p.uid === userId && {
+                        color: "#4F46E5",
+                        fontWeight: "bold",
+                      },
+                    ]}
+                  >
+                    {p.displayName}
+                    {p.uid === userId ? " (You)" : ""}
+                  </Text>
                   <View style={styles.playerMeta}>
                     <Text style={styles.playerPoints}>{p.points ?? 0} pts</Text>
                     {gameData?.currentDrawer === p.uid && (
@@ -1590,9 +1727,32 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "#E5E7EB",
   },
+  playerAvatarContainer: {
+    position: "relative",
+    marginRight: 10,
+  },
+  playerAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  playerAvatarText: {
+    color: "#333",
+    fontWeight: "bold",
+    fontSize: 14,
+  },
+  hostCrown: {
+    position: "absolute",
+    top: -12,
+    left: -2,
+    transform: [{ rotate: "-25deg" }],
+  },
   playerName: {
     fontSize: 14,
     color: "#111827",
+    flex: 1,
   },
   playerMeta: {
     flexDirection: "row",

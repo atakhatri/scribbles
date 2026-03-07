@@ -1,14 +1,18 @@
 import Preloader from "@/components/preloader";
+import { useToast } from "@/context/ToastContext";
+import GRADIENTS from "@/data/gradients";
+import { cleanupGuestAccount } from "@/utils/guestAuth";
 import { Ionicons } from "@expo/vector-icons";
 import Constants from "expo-constants";
 import * as FileSystem from "expo-file-system";
 import * as IntentLauncher from "expo-intent-launcher";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
-import { getAuth, signOut, updateProfile } from "firebase/auth";
+import { deleteUser, getAuth, signOut, updateProfile } from "firebase/auth";
 import {
   collection,
   doc,
+  getDoc,
   getDocs,
   getFirestore,
   onSnapshot,
@@ -31,31 +35,14 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from "react-native";
-import { useToast } from "../context/ToastContext";
 
 const UPDATE_JSON_URL =
   "https://gist.githubusercontent.com/atakhatri/14928794d017d4b66a845d2afb58f487/raw/version.json";
 
-const AVATAR_GRADIENTS = [
-  ["#FF9A9E", "#FECFEF"], // Pink
-  ["#a18cd1", "#fbc2eb"], // Purple
-  ["#84fab0", "#8fd3f4"], // Aqua
-  ["#fccb90", "#d57eeb"], // Sunset
-  ["#e0c3fc", "#8ec5fc"], // Lavender
-  ["#f093fb", "#f5576c"], // Red/Pink
-  ["#4facfe", "#00f2fe"], // Blue
-  ["#43e97b", "#38f9d7"], // Green
-  ["#FF6B6B", "#FFD166"], // Orange/Red
-  ["#a8edea", "#fed6e3"], // Pastel
-  ["#c471ed", "#f64f59"], // Violet/Red
-  ["#00c6fb", "#005bea"], // Deep Blue
-  ["#f83600", "#f9d423"], // Sunset Orange/Yellow
-  ["#6a11cb", "#2575fc"], // Royal Purple/Blue
-  ["#FF5F6D", "#FFC371"], // Peach/Pink
-  ["#20bf55", "#01baef"], // Green/Blue
-] as const;
+const AVATAR_GRADIENTS = GRADIENTS;
 
 export default function ProfileScreen() {
   const router = useRouter();
@@ -63,6 +50,7 @@ export default function ProfileScreen() {
   const db = getFirestore();
   const user = auth.currentUser;
   const { showToast, showAlert } = useToast();
+  const { width } = useWindowDimensions();
 
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState(false);
@@ -75,6 +63,7 @@ export default function ProfileScreen() {
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [isDownloading, setIsDownloading] = useState(false);
   const [showLogoutModal, setShowLogoutModal] = useState(false);
+  const [isGuest, setIsGuest] = useState(false);
   const winRateAnim = useRef(new Animated.Value(0)).current;
   const tabAnim = useRef(new Animated.Value(0)).current;
 
@@ -102,62 +91,85 @@ export default function ProfileScreen() {
       setLoading(false);
       return;
     }
+    // Check if user is a guest by checking both collections
+    const checkUserCollection = async () => {
+      // First try users collection
+      let userDocRef = doc(db, "users", user.uid);
+      let docSnap = await getDoc(userDocRef);
 
-    // Set up a real-time listener for the user's document in Firestore
-    const userDocRef = doc(db, "users", user.uid);
+      if (!docSnap.exists()) {
+        // Try guestUsers collection
+        userDocRef = doc(db, "guestUsers", user.uid);
+        docSnap = await getDoc(userDocRef);
 
-    const unsubscribe = onSnapshot(
-      userDocRef,
-      async (docSnap) => {
         if (docSnap.exists()) {
-          const data = docSnap.data();
-          setStats({
-            wins: data.wins || 0,
-            totalGames: data.totalGames || 0,
-            score: data.totalScore || 0,
-          });
-
-          // Fetch recent games based on references in user doc
-          const recentGameRefs = data.recentGames || [];
-          if (recentGameRefs.length > 0) {
-            const gameIds = recentGameRefs.map((ref: any) => ref.gameId);
-            const gamesRef = collection(db, "games");
-            const q = query(gamesRef, where("__name__", "in", gameIds));
-            const gamesSnap = await getDocs(q);
-            const gamesData = gamesSnap.docs.map((d) => ({
-              id: d.id,
-              ...d.data(),
-            }));
-            // Sort games based on the order in the user's recentGames array
-            const sortedGames = gameIds
-              .map((id: string) => gamesData.find((game) => game.id === id))
-              .filter(Boolean); // Filter out any games that might have been deleted
-            setRecentGames(sortedGames);
-          } else {
-            setRecentGames([]);
-          }
-
-          if (data.avatarGradientIndex !== undefined) {
-            setSelectedGradientIndex(data.avatarGradientIndex);
-          }
-          // Sync display name if it changed elsewhere
-          if (
-            (data.username || data.displayName) &&
-            (data.username || data.displayName) !== displayName &&
-            !updating
-          ) {
-            setDisplayName(data.username || data.displayName);
-          }
+          setIsGuest(true);
         }
-        setLoading(false);
-      },
-      (error) => {
-        console.error("Error listening to user data:", error);
-        setLoading(false);
-      },
-    );
+      } else {
+        setIsGuest(false);
+      }
 
-    return () => unsubscribe();
+      return userDocRef;
+    };
+
+    let unsubscribe: (() => void) | undefined;
+
+    checkUserCollection().then((userDocRef) => {
+      unsubscribe = onSnapshot(
+        userDocRef,
+        async (docSnap) => {
+          if (docSnap.exists()) {
+            const data = docSnap.data();
+            setStats({
+              wins: data.wins || 0,
+              totalGames: data.totalGames || 0,
+              score: data.totalScore || 0,
+            });
+
+            // Fetch recent games based on references in user doc
+            const recentGameRefs = data.recentGames || [];
+            if (recentGameRefs.length > 0) {
+              const gameIds = recentGameRefs.map((ref: any) => ref.gameId);
+              const gamesRef = collection(db, "games");
+              const q = query(gamesRef, where("__name__", "in", gameIds));
+              const gamesSnap = await getDocs(q);
+              const gamesData = gamesSnap.docs.map((d) => ({
+                id: d.id,
+                ...d.data(),
+              }));
+              // Sort games based on the order in the user's recentGames array
+              const sortedGames = gameIds
+                .map((id: string) => gamesData.find((game) => game.id === id))
+                .filter(Boolean); // Filter out any games that might have been deleted
+              setRecentGames(sortedGames);
+            } else {
+              setRecentGames([]);
+            }
+
+            if (data.avatarGradientIndex !== undefined) {
+              setSelectedGradientIndex(data.avatarGradientIndex);
+            }
+            // Sync display name if it changed elsewhere
+            if (
+              (data.username || data.displayName) &&
+              (data.username || data.displayName) !== displayName &&
+              !updating
+            ) {
+              setDisplayName(data.username || data.displayName);
+            }
+          }
+          setLoading(false);
+        },
+        (error) => {
+          console.error("Error listening to user data:", error);
+          setLoading(false);
+        },
+      );
+    });
+
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
   }, [user]);
 
   // Animate Win Rate
@@ -185,7 +197,8 @@ export default function ProfileScreen() {
   const handleGradientSelect = async (index: number) => {
     setSelectedGradientIndex(index);
     if (user) {
-      await updateDoc(doc(db, "users", user.uid), {
+      const collection = isGuest ? "guestUsers" : "users";
+      await updateDoc(doc(db, collection, user.uid), {
         avatarGradientIndex: index,
       });
     }
@@ -199,22 +212,43 @@ export default function ProfileScreen() {
 
     setUpdating(true);
     try {
-      // Check uniqueness
+      // Check uniqueness across both users and guestUsers collections
       const usersRef = collection(db, "users");
+      const guestUsersRef = collection(db, "guestUsers");
       const lowerName = newName.toLowerCase();
 
-      // Check against usernameLower (case-insensitive) and username (exact legacy)
-      const qLower = query(usersRef, where("usernameLower", "==", lowerName));
-      const qExact = query(usersRef, where("username", "==", newName));
+      // Check against usernameLower (case-insensitive) and username (exact legacy) in both collections
+      const qUsersLower = query(
+        usersRef,
+        where("usernameLower", "==", lowerName),
+      );
+      const qUsersExact = query(usersRef, where("username", "==", newName));
+      const qGuestUsersLower = query(
+        guestUsersRef,
+        where("usernameLower", "==", lowerName),
+      );
+      const qGuestUsersExact = query(
+        guestUsersRef,
+        where("username", "==", newName),
+      );
 
-      const [snapLower, snapExact] = await Promise.all([
-        getDocs(qLower),
-        getDocs(qExact),
+      const [
+        snapUsersLower,
+        snapUsersExact,
+        snapGuestUsersLower,
+        snapGuestUsersExact,
+      ] = await Promise.all([
+        getDocs(qUsersLower),
+        getDocs(qUsersExact),
+        getDocs(qGuestUsersLower),
+        getDocs(qGuestUsersExact),
       ]);
 
       const isTaken =
-        snapLower.docs.some((d) => d.id !== user.uid) ||
-        snapExact.docs.some((d) => d.id !== user.uid);
+        snapUsersLower.docs.some((d) => d.id !== user.uid) ||
+        snapUsersExact.docs.some((d) => d.id !== user.uid) ||
+        snapGuestUsersLower.docs.some((d) => d.id !== user.uid) ||
+        snapGuestUsersExact.docs.some((d) => d.id !== user.uid);
 
       if (isTaken) {
         showToast({
@@ -226,7 +260,9 @@ export default function ProfileScreen() {
       }
 
       await updateProfile(user, { displayName: newName });
-      await updateDoc(doc(db, "users", user.uid), {
+
+      const collectionName = isGuest ? "guestUsers" : "users";
+      await updateDoc(doc(db, collectionName, user.uid), {
         displayName: newName,
         username: newName,
         usernameLower: lowerName,
@@ -245,9 +281,19 @@ export default function ProfileScreen() {
 
   const confirmLogout = async () => {
     try {
-      await signOut(auth);
-      router.replace("/auth/login");
+      if (isGuest && user) {
+        // For guest users: cleanup their account completely
+        await cleanupGuestAccount(user.uid);
+        // Delete the auth account
+        await deleteUser(user);
+        router.replace("/");
+      } else {
+        // For regular users: just sign out
+        await signOut(auth);
+        router.replace("/auth/login");
+      }
     } catch (error) {
+      console.error("Logout error:", error);
       showToast({ message: "Failed to sign out.", type: "error" });
     }
   };
@@ -353,7 +399,7 @@ export default function ProfileScreen() {
     <View style={styles.container}>
       {/* RESTORED BACKGROUND: Using blurRadius directly on Image for reliability */}
       <Image
-        source={require("../assets/images/profile.jpeg")}
+        source={require("../../assets/images/profile.jpeg")}
         style={styles.backgroundImage}
         blurRadius={20}
       />
@@ -402,6 +448,15 @@ export default function ProfileScreen() {
             </Text>
           </View>
 
+          {isGuest && (
+            <View style={styles.guestWarningBanner}>
+              <Ionicons name="warning" size={20} color="#ff9800" />
+              <Text style={styles.guestWarningText}>
+                Guest Account: Create a permanent account to keep your progress!
+              </Text>
+            </View>
+          )}
+
           <View style={styles.tabContainer}>
             <Animated.View
               style={[
@@ -409,11 +464,13 @@ export default function ProfileScreen() {
                 {
                   left: tabAnim.interpolate({
                     inputRange: [0, 1],
-                    outputRange: ["1%", "51%"],
+                    outputRange: ["0%", "50%"],
                   }),
                 },
               ]}
-            />
+            >
+              <View style={styles.activeTabInner} />
+            </Animated.View>
             <TouchableOpacity
               style={styles.tab}
               onPress={() => handleTabChange("profile")}
@@ -442,212 +499,257 @@ export default function ProfileScreen() {
             </TouchableOpacity>
           </View>
 
-          {activeTab === "profile" ? (
-            <View style={styles.statsContainer}>
-              {/* Hero Stat: Total Score */}
-              <LinearGradient
-                colors={["#6a11cb", "#2575fc"]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.heroStatCard}
-              >
-                <View>
-                  <Text style={styles.heroStatLabel}>Total Score</Text>
-                  <Text style={styles.heroStatValue}>{stats.score}</Text>
-                </View>
-                <Ionicons
-                  name="ribbon"
-                  size={80}
-                  color="rgba(255,255,255,0.2)"
-                  style={styles.heroStatIcon}
-                />
-              </LinearGradient>
-
-              <View style={styles.subStatsRow}>
-                {/* Wins */}
-                <LinearGradient
-                  colors={["#f093fb", "#f5576c"]}
-                  style={styles.subStatCard}
-                >
-                  <View style={styles.subStatHeader}>
-                    <Ionicons name="trophy" size={24} color="white" />
-                    <Text style={styles.subStatLabel}>Wins</Text>
-                  </View>
-                  <Text style={styles.subStatValue}>{stats.wins}</Text>
-                </LinearGradient>
-
-                {/* Games Played */}
-                <LinearGradient
-                  colors={["#4facfe", "#00f2fe"]}
-                  style={styles.subStatCard}
-                >
-                  <View style={styles.subStatHeader}>
-                    <Ionicons name="game-controller" size={24} color="white" />
-                    <Text style={styles.subStatLabel}>Played</Text>
-                  </View>
-                  <Text style={styles.subStatValue}>{stats.totalGames}</Text>
-                </LinearGradient>
-              </View>
-              {/* Win Rate Bar */}
-              <View style={styles.winRateContainer}>
-                <View style={styles.winRateHeader}>
-                  <Text style={styles.winRateLabel}>Win Rate</Text>
-                  <Text style={styles.winRatePercent}>
-                    {stats.totalGames > 0
-                      ? Math.round((stats.wins / stats.totalGames) * 100)
-                      : 0}
-                    %
-                  </Text>
-                </View>
-                <View style={styles.progressBarBg}>
-                  <Animated.View
-                    style={[
-                      styles.progressBarFill,
-                      {
-                        width: winRateAnim.interpolate({
-                          inputRange: [0, 100],
-                          outputRange: ["0%", "100%"],
-                        }),
-                      },
-                    ]}
+          <View style={{ overflow: "hidden" }}>
+            <Animated.View
+              style={{
+                flexDirection: "row",
+                width: width * 2,
+                transform: [
+                  {
+                    translateX: tabAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [0, -width],
+                    }),
+                  },
+                ],
+              }}
+            >
+              <View style={{ width }}>
+                <View style={styles.statsContainer}>
+                  {/* Hero Stat: Total Score */}
+                  <LinearGradient
+                    colors={["#6a11cb", "#2575fc"]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.heroStatCard}
                   >
-                    <LinearGradient
-                      colors={["#43e97b", "#38f9d7"]}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 0 }}
-                      style={{ flex: 1 }}
+                    <View>
+                      <Text style={styles.heroStatLabel}>Total Score</Text>
+                      <Text style={styles.heroStatValue}>{stats.score}</Text>
+                    </View>
+                    <Ionicons
+                      name="ribbon"
+                      size={80}
+                      color="rgba(255,255,255,0.2)"
+                      style={styles.heroStatIcon}
                     />
-                  </Animated.View>
-                </View>
-              </View>
+                  </LinearGradient>
 
-              {/* Recent Games List */}
-              <View style={styles.recentGamesContainer}>
-                <Text style={styles.sectionTitle}>Recent Games</Text>
-                {recentGames.length === 0 ? (
-                  <Text style={styles.emptyText}>No games played yet.</Text>
-                ) : (
-                  recentGames.map((game) => {
-                    const myScore = game.scores?.[user?.uid || ""] || 0;
-                    const allScores = Object.values(game.scores || {});
-                    const maxScore =
-                      allScores.length > 0
-                        ? Math.max(...(allScores as number[]))
-                        : 0;
-                    const isWinner = myScore > 0 && myScore === maxScore;
-
-                    return (
-                      <View key={game.id} style={styles.gameRow}>
-                        <View style={styles.gameIcon}>
-                          <Ionicons
-                            name="game-controller-outline"
-                            size={20}
-                            color="#fff"
-                          />
-                        </View>
-                        <View style={styles.gameInfo}>
-                          <Text style={styles.gameId}>
-                            {game.id.substring(0, 4)}
-                          </Text>
-                          <Text style={styles.gameDate}>
-                            {game.createdAt
-                              ? new Date(game.createdAt).toLocaleDateString()
-                              : "--/--/----"}
-                          </Text>
-                        </View>
-                        <View style={styles.gameScore}>
-                          {isWinner && (
-                            <Ionicons name="trophy" size={16} color="#FFD700" />
-                          )}
-                          <Text style={styles.scoreValue}>{myScore} pts</Text>
-                        </View>
-                      </View>
-                    );
-                  })
-                )}
-              </View>
-            </View>
-          ) : (
-            <View style={styles.settingsContainer}>
-              <Text style={styles.inputLabel}>Avatar Color</Text>
-              <View style={styles.gradientSelector}>
-                {AVATAR_GRADIENTS.map((colors, index) => (
-                  <TouchableOpacity
-                    key={index}
-                    onPress={() => handleGradientSelect(index)}
-                  >
+                  <View style={styles.subStatsRow}>
+                    {/* Wins */}
                     <LinearGradient
-                      colors={colors}
-                      style={[
-                        styles.gradientOption,
-                        currentGradientIndex === index &&
-                          styles.selectedGradientOption,
-                      ]}
+                      colors={["#f093fb", "#f5576c"]}
+                      style={styles.subStatCard}
                     >
-                      {currentGradientIndex === index && (
-                        <Ionicons name="checkmark" size={28} color="white" />
-                      )}
+                      <View style={styles.subStatHeader}>
+                        <Ionicons name="trophy" size={24} color="white" />
+                        <Text style={styles.subStatLabel}>Wins</Text>
+                      </View>
+                      <Text style={styles.subStatValue}>{stats.wins}</Text>
                     </LinearGradient>
+
+                    {/* Games Played */}
+                    <LinearGradient
+                      colors={["#4facfe", "#00f2fe"]}
+                      style={styles.subStatCard}
+                    >
+                      <View style={styles.subStatHeader}>
+                        <Ionicons
+                          name="game-controller"
+                          size={24}
+                          color="white"
+                        />
+                        <Text style={styles.subStatLabel}>Played</Text>
+                      </View>
+                      <Text style={styles.subStatValue}>
+                        {stats.totalGames}
+                      </Text>
+                    </LinearGradient>
+                  </View>
+                  {/* Win Rate Bar */}
+                  <View style={styles.winRateContainer}>
+                    <View style={styles.winRateHeader}>
+                      <Text style={styles.winRateLabel}>Win Rate</Text>
+                      <Text style={styles.winRatePercent}>
+                        {stats.totalGames > 0
+                          ? Math.round((stats.wins / stats.totalGames) * 100)
+                          : 0}
+                        %
+                      </Text>
+                    </View>
+                    <View style={styles.progressBarBg}>
+                      <Animated.View
+                        style={[
+                          styles.progressBarFill,
+                          {
+                            width: winRateAnim.interpolate({
+                              inputRange: [0, 100],
+                              outputRange: ["0%", "100%"],
+                            }),
+                          },
+                        ]}
+                      >
+                        <LinearGradient
+                          colors={["#43e97b", "#38f9d7"]}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 1, y: 0 }}
+                          style={{ flex: 1 }}
+                        />
+                      </Animated.View>
+                    </View>
+                  </View>
+
+                  {/* Recent Games List */}
+                  <View style={styles.recentGamesContainer}>
+                    <Text style={styles.sectionTitle}>Recent Games</Text>
+                    {recentGames.length === 0 ? (
+                      <Text style={styles.emptyText}>No games played yet.</Text>
+                    ) : (
+                      recentGames.map((game) => {
+                        const myScore = game.scores?.[user?.uid || ""] || 0;
+                        const allScores = Object.values(game.scores || {});
+                        const maxScore =
+                          allScores.length > 0
+                            ? Math.max(...(allScores as number[]))
+                            : 0;
+                        const isWinner = myScore > 0 && myScore === maxScore;
+
+                        return (
+                          <View key={game.id} style={styles.gameRow}>
+                            <View style={styles.gameIcon}>
+                              <Ionicons
+                                name="game-controller-outline"
+                                size={20}
+                                color="#fff"
+                              />
+                            </View>
+                            <View style={styles.gameInfo}>
+                              <Text style={styles.gameId}>
+                                {game.id.substring(0, 4)}
+                              </Text>
+                              <Text style={styles.gameDate}>
+                                {game.createdAt
+                                  ? new Date(
+                                      game.createdAt,
+                                    ).toLocaleDateString()
+                                  : "--/--/----"}
+                              </Text>
+                            </View>
+                            <View style={styles.gameScore}>
+                              {isWinner && (
+                                <Ionicons
+                                  name="trophy"
+                                  size={16}
+                                  color="#FFD700"
+                                />
+                              )}
+                              <Text style={styles.scoreValue}>
+                                {myScore} pts
+                              </Text>
+                            </View>
+                          </View>
+                        );
+                      })
+                    )}
+                  </View>
+                </View>
+              </View>
+              <View style={{ width }}>
+                <View style={styles.settingsContainer}>
+                  <Text style={styles.inputLabel}>Avatar Color</Text>
+                  <View style={styles.gradientSelector}>
+                    {AVATAR_GRADIENTS.map((colors, index) => (
+                      <TouchableOpacity
+                        key={index}
+                        onPress={() => handleGradientSelect(index)}
+                      >
+                        <LinearGradient
+                          colors={colors}
+                          style={[
+                            styles.gradientOption,
+                            currentGradientIndex === index &&
+                              styles.selectedGradientOption,
+                          ]}
+                        >
+                          {currentGradientIndex === index && (
+                            <Ionicons
+                              name="checkmark"
+                              size={28}
+                              color="white"
+                            />
+                          )}
+                        </LinearGradient>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+
+                  <Text style={styles.inputLabel}>Display Name</Text>
+                  <View style={styles.inputGroup}>
+                    <TextInput
+                      style={styles.input}
+                      value={displayName}
+                      onChangeText={setDisplayName}
+                      placeholder="Enter name"
+                      placeholderTextColor="#999"
+                    />
+                    <TouchableOpacity
+                      style={[
+                        styles.saveButton,
+                        { opacity: updating ? 0.7 : 1 },
+                      ]}
+                      onPress={handleUpdateProfile}
+                      disabled={updating}
+                    >
+                      {updating ? (
+                        <ActivityIndicator color="white" />
+                      ) : (
+                        <Text style={styles.saveButtonText}>Save</Text>
+                      )}
+                    </TouchableOpacity>
+                  </View>
+
+                  <View style={styles.divider} />
+
+                  <TouchableOpacity
+                    style={styles.settingItem}
+                    onPress={checkForUpdates}
+                  >
+                    <View style={styles.settingInfo}>
+                      <Ionicons
+                        name="cloud-download-outline"
+                        size={22}
+                        color="white"
+                      />
+                      <Text style={styles.settingText}>Check for Updates</Text>
+                    </View>
+                    {checkingUpdate ? (
+                      <ActivityIndicator size="small" color="#ffffff" />
+                    ) : (
+                      <Text style={styles.versionText}>
+                        v{currentAppVersion}
+                      </Text>
+                    )}
                   </TouchableOpacity>
-                ))}
-              </View>
 
-              <Text style={styles.inputLabel}>Display Name</Text>
-              <View style={styles.inputGroup}>
-                <TextInput
-                  style={styles.input}
-                  value={displayName}
-                  onChangeText={setDisplayName}
-                  placeholder="Enter name"
-                  placeholderTextColor="#999"
-                />
-                <TouchableOpacity
-                  style={[styles.saveButton, { opacity: updating ? 0.7 : 1 }]}
-                  onPress={handleUpdateProfile}
-                  disabled={updating}
-                >
-                  {updating ? (
-                    <ActivityIndicator color="white" />
-                  ) : (
-                    <Text style={styles.saveButtonText}>Save</Text>
-                  )}
-                </TouchableOpacity>
-              </View>
-
-              <View style={styles.divider} />
-
-              <TouchableOpacity
-                style={styles.settingItem}
-                onPress={checkForUpdates}
-              >
-                <View style={styles.settingInfo}>
-                  <Ionicons
-                    name="cloud-download-outline"
-                    size={22}
-                    color="white"
-                  />
-                  <Text style={styles.settingText}>Check for Updates</Text>
+                  <TouchableOpacity
+                    style={[styles.logoutItem]}
+                    onPress={handleLogout}
+                  >
+                    <View style={styles.settingInfo}>
+                      <Ionicons
+                        name="log-out-outline"
+                        size={22}
+                        color="#ff0000"
+                      />
+                      <Text style={[styles.settingText, { color: "#ff0000" }]}>
+                        Logout
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
                 </View>
-                {checkingUpdate ? (
-                  <ActivityIndicator size="small" color="#ffffff" />
-                ) : (
-                  <Text style={styles.versionText}>v{currentAppVersion}</Text>
-                )}
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.logoutItem]}
-                onPress={handleLogout}
-              >
-                <View style={styles.settingInfo}>
-                  <Ionicons name="log-out-outline" size={22} color="#ff0000" />
-                  <Text style={[styles.settingText, { color: "#ff0000" }]}>
-                    Logout
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            </View>
-          )}
+              </View>
+            </Animated.View>
+          </View>
         </ScrollView>
       </KeyboardAvoidingView>
 
@@ -759,22 +861,44 @@ const styles = StyleSheet.create({
     marginBottom: 5,
   },
   userEmail: { fontSize: 14, color: "rgba(255, 255, 255, 0.64)" },
+  guestWarningBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(255, 152, 0, 0.2)",
+    padding: 12,
+    borderRadius: 8,
+    marginHorizontal: 20,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: "#ff9800",
+    gap: 10,
+  },
+  guestWarningText: {
+    flex: 1,
+    color: "#ff9800",
+    fontSize: 12,
+    fontWeight: "600",
+  },
   tabContainer: {
     flexDirection: "row",
     backgroundColor: "rgba(255,255,255,0.1)",
     marginHorizontal: 25,
     borderRadius: 20,
-    padding: 5,
     marginBottom: 25,
     position: "relative",
+    height: 54,
   },
   activeTabIndicator: {
     position: "absolute",
-    top: 5,
-    bottom: 5,
-    width: "48%",
+    top: 0,
+    bottom: 0,
+    width: "50%",
+  },
+  activeTabInner: {
+    flex: 1,
     backgroundColor: "#ff861c",
     borderRadius: 15,
+    margin: 5,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.2,
@@ -783,7 +907,7 @@ const styles = StyleSheet.create({
   },
   tab: {
     flex: 1,
-    paddingVertical: 12,
+    justifyContent: "center",
     alignItems: "center",
     borderRadius: 15,
     zIndex: 1,

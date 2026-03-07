@@ -5,6 +5,7 @@ import React, { useEffect, useState } from "react";
 import {
   FlatList,
   Modal,
+  Pressable,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -47,17 +48,41 @@ export default function InviteFriendsModal({
       try {
         const me = auth.currentUser;
         if (!me) return;
-        const meDoc = await getDoc(doc(db, "users", me.uid));
+
+        // Check if current user is in users or guestUsers collection
+        let meDoc = await getDoc(doc(db, "users", me.uid));
+        if (!meDoc.exists()) {
+          meDoc = await getDoc(doc(db, "guestUsers", me.uid));
+        }
+
         const fIds: string[] = meDoc.exists() ? meDoc.data().friends || [] : [];
         const profiles: any[] = [];
+
+        // Fetch friends from both collections
         for (const id of fIds) {
           try {
-            const d = await getDoc(doc(db, "users", id));
+            let d = await getDoc(doc(db, "users", id));
+            if (!d.exists()) {
+              d = await getDoc(doc(db, "guestUsers", id));
+            }
             if (d.exists()) profiles.push({ id: d.id, ...(d.data() || {}) });
           } catch (e) {
             // ignore
           }
         }
+
+        // Sort by online status: online users first, then by lastSeen
+        profiles.sort((a, b) => {
+          const aOnline = a.isOnline && Date.now() - (a.lastSeen || 0) < 120000;
+          const bOnline = b.isOnline && Date.now() - (b.lastSeen || 0) < 120000;
+
+          if (aOnline && !bOnline) return -1;
+          if (!aOnline && bOnline) return 1;
+
+          // Both same online status, sort by lastSeen
+          return (b.lastSeen || 0) - (a.lastSeen || 0);
+        });
+
         if (mounted) setFriends(profiles);
       } catch (e) {
         console.error("InviteFriendsModal fetch error", e);
@@ -72,7 +97,12 @@ export default function InviteFriendsModal({
     if (invitedIds.includes(targetId)) return;
     try {
       const inviterName = auth.currentUser?.displayName || "A player";
-      await updateDoc(doc(db, "users", targetId), {
+
+      // Determine target collection
+      let targetDoc = await getDoc(doc(db, "users", targetId));
+      const targetCollection = targetDoc.exists() ? "users" : "guestUsers";
+
+      await updateDoc(doc(db, targetCollection, targetId), {
         gameInvites: arrayUnion({ roomId, inviterName, timestamp: Date.now() }),
       });
       setInviteIds((prev) => [...prev, targetId]);
@@ -90,8 +120,8 @@ export default function InviteFriendsModal({
       animationType="fade"
       onRequestClose={onClose}
     >
-      <View style={styles.overlay}>
-        <View style={styles.card}>
+      <Pressable style={styles.overlay} onPress={onClose}>
+        <Pressable style={styles.card} onPress={(e) => e.stopPropagation()}>
           <View style={styles.header}>
             <Text style={styles.title}>Invite Friends</Text>
             <TouchableOpacity onPress={onClose} style={styles.closeButton}>
@@ -123,6 +153,10 @@ export default function InviteFriendsModal({
                           item.displayName?.[0]?.toUpperCase() ||
                           "?"}
                       </Text>
+                      {item.isOnline &&
+                        Date.now() - (item.lastSeen || 0) < 120000 && (
+                          <View style={styles.onlineIndicator} />
+                        )}
                     </LinearGradient>
                     <Text style={styles.name} numberOfLines={1}>
                       {item.username || item.displayName || item.id}
@@ -149,8 +183,8 @@ export default function InviteFriendsModal({
               <Text style={styles.empty}>No friends found.</Text>
             }
           />
-        </View>
-      </View>
+        </Pressable>
+      </Pressable>
     </Modal>
   );
 }
@@ -213,6 +247,17 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   avatarText: { fontSize: 18, fontWeight: "bold", color: "#333" },
+  onlineIndicator: {
+    position: "absolute",
+    bottom: 2,
+    right: 2,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: "#4ade80",
+    borderWidth: 2,
+    borderColor: "#fff",
+  },
   name: { fontSize: 16, fontWeight: "600", color: "#333", flex: 1 },
   inviteBtn: {
     backgroundColor: "#333",

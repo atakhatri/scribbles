@@ -14,12 +14,14 @@ import {
   getDocs,
   onSnapshot,
   query,
+  serverTimestamp,
   setDoc,
   updateDoc,
   where,
 } from "firebase/firestore";
 import React, { useEffect, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Animated,
   Dimensions,
   Easing,
@@ -44,6 +46,7 @@ import Preloader from "../components/preloader";
 import { useToast } from "../context/ToastContext";
 import WELCOME_TEXT from "../data/welcomePhrases";
 import { auth, db } from "../firebaseConfig";
+import { signInAsGuest } from "../utils/guestAuth";
 // Generate numbers 1-20 for the wheel
 const ROUND_OPTIONS = Array.from({ length: 20 }, (_, i) => i + 1);
 
@@ -54,16 +57,12 @@ const AVATAR_GRADIENTS = GRADIENTS; // Reuse the same gradients for avatars
 const MIN_FRIENDS_HEIGHT = 80;
 const MAX_FRIENDS_HEIGHT = 500;
 
-const getAvatarGradient = (uid: string): [string, string, ...string[]] => {
+const getAvatarGradient = (uid: string) => {
   let hash = 0;
   for (let i = 0; i < uid.length; i++) {
     hash = uid.charCodeAt(i) + ((hash << 5) - hash);
   }
-  return AVATAR_GRADIENTS[Math.abs(hash) % AVATAR_GRADIENTS.length] as [
-    string,
-    string,
-    ...string[],
-  ];
+  return AVATAR_GRADIENTS[Math.abs(hash) % AVATAR_GRADIENTS.length];
 };
 
 const formatLastSeen = (timestamp?: number, isOnline?: boolean) => {
@@ -116,12 +115,14 @@ export default function Index() {
   const [gameInvite, setGameInvite] = useState<any>(null);
   const [friendsPreview, setFriendsPreview] = useState<any[]>([]);
   const [friendCount, setFriendCount] = useState(0);
+  const [isRefreshingFriends, setIsRefreshingFriends] = useState(false);
   const [activeGameId, setActiveGameId] = useState<string | null>(null);
   const [activeGamePlayers, setActiveGamePlayers] = useState<any[]>([]);
   const [avatarGradientIndex, setAvatarGradientIndex] = useState<number>(-1);
 
   const [createRoomModalVisible, setCreateRoomModalVisible] = useState(false);
   const [isFriendsExpanded, setIsFriendsExpanded] = useState(false);
+  const [isGuestLoading, setIsGuestLoading] = useState(false);
 
   // Animation State
   const [showJoin, setShowJoin] = useState(true);
@@ -253,9 +254,17 @@ export default function Index() {
       setUser(currentUser);
 
       if (currentUser) {
-        const docRef = doc(db, "users", currentUser.uid);
+        // Check if user is in regular users or guestUsers collection
+        let docRef = doc(db, "users", currentUser.uid);
+        let docSnap = await getDoc(docRef);
+
+        if (!docSnap.exists()) {
+          // Check guestUsers collection
+          docRef = doc(db, "guestUsers", currentUser.uid);
+          docSnap = await getDoc(docRef);
+        }
+
         try {
-          const docSnap = await getDoc(docRef);
           if (docSnap.exists()) {
             setUsername(docSnap.data().username);
           } else {
@@ -281,34 +290,56 @@ export default function Index() {
       }
     };
     checkOnboarding();
+
     return () => unsubscribe();
   }, []);
 
-  // 1.5 Listen for Game Invites
+  // 2. Listen to user document (invites, friends, avatar)
   useEffect(() => {
     if (!user) return;
-    const unsub = onSnapshot(doc(db, "users", user.uid), (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        const invites = data.gameInvites || [];
-        if (invites.length > 0 && pathname === "/") {
-          // Show the latest invite
-          setGameInvite(invites[invites.length - 1]);
-        } else {
-          setGameInvite(null);
-        }
 
-        // Friends Preview
-        const fIds = data.friends || [];
-        setFriendCount(fIds.length);
-        fetchTopFriends(fIds);
+    // Check both users and guestUsers collections
+    const checkCollection = async () => {
+      let userDocRef = doc(db, "users", user.uid);
+      let userDoc = await getDoc(userDocRef);
 
-        if (data.avatarGradientIndex !== undefined) {
-          setAvatarGradientIndex(data.avatarGradientIndex);
-        }
+      if (!userDoc.exists()) {
+        userDocRef = doc(db, "guestUsers", user.uid);
       }
+
+      const unsub = onSnapshot(userDocRef, (docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          const invites = data.gameInvites || [];
+          if (invites.length > 0 && pathname === "/") {
+            // Show the latest invite
+            setGameInvite(invites[invites.length - 1]);
+          } else {
+            setGameInvite(null);
+          }
+
+          // Friends Preview
+          const fIds = data.friends || [];
+          setFriendCount(fIds.length);
+          fetchTopFriends(fIds);
+
+          if (data.avatarGradientIndex !== undefined) {
+            setAvatarGradientIndex(data.avatarGradientIndex);
+          }
+        }
+      });
+
+      return unsub;
+    };
+
+    let unsubscribe: (() => void) | undefined;
+    checkCollection().then((unsub) => {
+      unsubscribe = unsub;
     });
-    return () => unsub();
+
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
   }, [user, pathname]);
 
   // Listen to active game (Waiting Group)
@@ -327,15 +358,35 @@ export default function Index() {
             return;
           }
 
-          const pIds = data.players || [];
-          if (pIds.length > 0) {
+          // Update players list for waiting lobby
+          if (data.players && Array.isArray(data.players)) {
+            const pIds = data.players.map((p: any) =>
+              typeof p === "string" ? p : p.uid,
+            );
+
+            // Fetch from both users and guestUsers collections
             const usersRef = collection(db, "users");
-            const q = query(
+            const guestUsersRef = collection(db, "guestUsers");
+
+            const usersQuery = query(
               usersRef,
               where("__name__", "in", pIds.slice(0, 10)),
             );
-            const snap = await getDocs(q);
-            const pData = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+            const guestUsersQuery = query(
+              guestUsersRef,
+              where("__name__", "in", pIds.slice(0, 10)),
+            );
+
+            const [usersSnap, guestUsersSnap] = await Promise.all([
+              getDocs(usersQuery),
+              getDocs(guestUsersQuery),
+            ]);
+
+            const pData = [
+              ...usersSnap.docs.map((d) => ({ id: d.id, ...d.data() })),
+              ...guestUsersSnap.docs.map((d) => ({ id: d.id, ...d.data() })),
+            ];
+
             setActiveGamePlayers(pData);
           }
 
@@ -354,10 +405,30 @@ export default function Index() {
     }
     const idsToFetch = allFriendIds.slice(0, 10); // Fetch up to 10 to sort
     try {
+      // First, try to fetch from users collection
       const usersRef = collection(db, "users");
       const q = query(usersRef, where("__name__", "in", idsToFetch));
       const snap = await getDocs(q);
       const friendsData = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+      // Also check guestUsers collection for any missing IDs
+      const foundIds = friendsData.map((f) => f.id);
+      const missingIds = idsToFetch.filter((id) => !foundIds.includes(id));
+
+      if (missingIds.length > 0) {
+        const guestUsersRef = collection(db, "guestUsers");
+        const guestQuery = query(
+          guestUsersRef,
+          where("__name__", "in", missingIds),
+        );
+        const guestSnap = await getDocs(guestQuery);
+        const guestData = guestSnap.docs.map((d) => ({
+          id: d.id,
+          ...d.data(),
+        }));
+        friendsData.push(...guestData);
+      }
+
       // Sort by Last Seen Descending
       friendsData.sort(
         (a: any, b: any) => (b.lastSeen || 0) - (a.lastSeen || 0),
@@ -420,6 +491,7 @@ export default function Index() {
           hostId: user!.uid,
           guesses: [],
           createdAt: Date.now(),
+          lastUpdated: serverTimestamp(),
         });
         setActiveGameId(gameId);
       }
@@ -561,7 +633,8 @@ export default function Index() {
 
   const friendsPanResponder = useRef(
     PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
+      // Only capture tap-start while minimized so expanded controls stay clickable.
+      onStartShouldSetPanResponder: () => !isFriendsExpandedRef.current,
       onMoveShouldSetPanResponder: (_, gestureState) => {
         return Math.abs(gestureState.dy) > 5 || Math.abs(gestureState.dx) > 5;
       },
@@ -642,6 +715,7 @@ export default function Index() {
         players: [user.uid],
         hostId: user.uid,
         guesses: [],
+        lastUpdated: serverTimestamp(),
       });
       router.push(`/game/${randomCode}`);
       setCreateRoomModalVisible(false);
@@ -651,23 +725,23 @@ export default function Index() {
   };
 
   const joinRoom = async () => {
-    if (roomCode.trim().length === 0) {
-      showToast({ message: "Please enter a room code first.", type: "info" });
+    if (!roomCode.trim()) {
+      showToast({ message: "Please enter a room code", type: "error" });
       return;
     }
 
-    if (roomCode.trim().length < 4) {
-      showToast({ message: "Room code must be 4 characters.", type: "error" });
+    if (roomCode.trim().length !== 4) {
+      showToast({ message: "Room code must be 4 characters", type: "error" });
       return;
     }
 
-    // Check if room exists
     try {
+      // Check if room exists in Firestore
       const roomRef = doc(db, "games", roomCode.toUpperCase());
       const roomSnap = await getDoc(roomRef);
 
       if (!roomSnap.exists()) {
-        showToast({ message: "Room not found.", type: "error" });
+        showToast({ message: "Room not found", type: "error" });
         return;
       }
 
@@ -678,6 +752,54 @@ export default function Index() {
         message: "Failed to check room. Please try again.",
         type: "error",
       });
+    }
+  };
+
+  const handleGuestLogin = async () => {
+    setIsGuestLoading(true);
+    try {
+      await signInAsGuest();
+      playSound(require("../assets/sounds/intro.mp3"));
+      router.replace("/");
+    } catch (error: any) {
+      showToast({ message: "Failed to sign in as guest", type: "error" });
+      console.error("Guest login error:", error);
+    } finally {
+      setIsGuestLoading(false);
+    }
+  };
+
+  const handleRefreshFriendsStatus = async () => {
+    if (!user || isRefreshingFriends) return;
+
+    setIsRefreshingFriends(true);
+    try {
+      // Check both users and guestUsers collections
+      let userDocRef = doc(db, "users", user.uid);
+      let userSnap = await getDoc(userDocRef);
+
+      if (!userSnap.exists()) {
+        userDocRef = doc(db, "guestUsers", user.uid);
+        userSnap = await getDoc(userDocRef);
+      }
+
+      if (!userSnap.exists()) {
+        setFriendCount(0);
+        setFriendsPreview([]);
+        showToast({ message: "Could not find your profile.", type: "error" });
+        return;
+      }
+
+      const data = userSnap.data();
+      const friendIds = data.friends || [];
+      setFriendCount(friendIds.length);
+      await fetchTopFriends(friendIds);
+      showToast({ message: "Friend statuses refreshed.", type: "success" });
+    } catch (error) {
+      console.error("Error refreshing friends status:", error);
+      showToast({ message: "Failed to refresh friends.", type: "error" });
+    } finally {
+      setIsRefreshingFriends(false);
     }
   };
 
@@ -699,17 +821,13 @@ export default function Index() {
             <Text style={styles.welcomeText}>
               {greetingTemplate.replace("{name}", username)}
             </Text>
-            <TouchableOpacity onPress={() => router.push("/profile")}>
+            <TouchableOpacity onPress={() => router.push("/pages/profile")}>
               <LinearGradient
                 colors={
-                  (avatarGradientIndex >= 0 &&
+                  avatarGradientIndex >= 0 &&
                   avatarGradientIndex < AVATAR_GRADIENTS.length
                     ? AVATAR_GRADIENTS[avatarGradientIndex]
-                    : getAvatarGradient(user.uid)) as [
-                    string,
-                    string,
-                    ...string[],
-                  ]
+                    : getAvatarGradient(user.uid)
                 }
                 style={styles.profileIcon}
               >
@@ -789,15 +907,11 @@ export default function Index() {
                     <View key={p.id} style={styles.waitingAvatarContainer}>
                       <LinearGradient
                         colors={
-                          (p.avatarGradientIndex !== undefined &&
+                          p.avatarGradientIndex !== undefined &&
                           p.avatarGradientIndex >= 0 &&
                           p.avatarGradientIndex < AVATAR_GRADIENTS.length
                             ? AVATAR_GRADIENTS[p.avatarGradientIndex]
-                            : getAvatarGradient(p.id)) as [
-                            string,
-                            string,
-                            ...string[],
-                          ]
+                            : getAvatarGradient(p.id)
                         }
                         style={styles.waitingAvatar}
                       >
@@ -814,7 +928,7 @@ export default function Index() {
                     style={styles.inviteMoreBtn}
                     onPress={() =>
                       router.push({
-                        pathname: "/friends",
+                        pathname: "/pages/friends",
                         params: { inviteToRoomId: activeGameId },
                       })
                     }
@@ -874,15 +988,11 @@ export default function Index() {
                         <LinearGradient
                           key={friend.id}
                           colors={
-                            (friend.avatarGradientIndex !== undefined &&
+                            friend.avatarGradientIndex !== undefined &&
                             friend.avatarGradientIndex >= 0 &&
                             friend.avatarGradientIndex < AVATAR_GRADIENTS.length
                               ? AVATAR_GRADIENTS[friend.avatarGradientIndex]
-                              : getAvatarGradient(friend.id)) as [
-                              string,
-                              string,
-                              ...string[],
-                            ]
+                              : getAvatarGradient(friend.id)
                           }
                           style={styles.minimizedAvatar}
                         >
@@ -921,8 +1031,19 @@ export default function Index() {
 
                 <Animated.View style={{ opacity: expandedOpacity }}>
                   <View style={styles.friendsHeader}>
+                    <View style={styles.friendsHeaderSpacer} />
                     <Text style={styles.friendsTitle}>Friends</Text>
-                    <Ionicons name="chevron-down" size={24} color="#333" />
+                    <TouchableOpacity
+                      onPress={handleRefreshFriendsStatus}
+                      style={styles.refreshFriendsBtn}
+                      disabled={isRefreshingFriends}
+                    >
+                      {isRefreshingFriends ? (
+                        <ActivityIndicator size="small" color="#333" />
+                      ) : (
+                        <Ionicons name="refresh" size={20} color="#333" />
+                      )}
+                    </TouchableOpacity>
                   </View>
                 </Animated.View>
               </View>
@@ -939,15 +1060,11 @@ export default function Index() {
                       <View style={styles.friendInfo}>
                         <LinearGradient
                           colors={
-                            (friend.avatarGradientIndex !== undefined &&
+                            friend.avatarGradientIndex !== undefined &&
                             friend.avatarGradientIndex >= 0 &&
                             friend.avatarGradientIndex < AVATAR_GRADIENTS.length
                               ? AVATAR_GRADIENTS[friend.avatarGradientIndex]
-                              : getAvatarGradient(friend.id)) as [
-                              string,
-                              string,
-                              ...string[],
-                            ]
+                              : getAvatarGradient(friend.id)
                           }
                           style={styles.friendAvatarSmall}
                         >
@@ -982,7 +1099,7 @@ export default function Index() {
                   ))}
                   <TouchableOpacity
                     style={styles.seeAllBtn}
-                    onPress={() => router.push("/friends")}
+                    onPress={() => router.push("/pages/friends")}
                   >
                     <Text style={styles.seeAllText}>
                       {friendCount === 0 ? "Add Friends" : "View All Friends"}
@@ -1104,12 +1221,32 @@ export default function Index() {
             <Text style={styles.buttonText}>Log In</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity
-            style={[styles.buttonSecondary, { marginTop: 15 }]}
-            onPress={() => router.push("/auth/register")}
+          <View
+            style={{
+              flexDirection: "row",
+              gap: 10,
+              justifyContent: "space-between",
+            }}
           >
-            <Text style={styles.buttonTextSecondary}>Create Account</Text>
-          </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.buttonSecondary, { marginTop: 15 }]}
+              onPress={() => router.push("/auth/register")}
+            >
+              <Text style={styles.buttonTextSecondary}>Create Account</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.buttonGuest, { marginTop: 15 }]}
+              onPress={handleGuestLogin}
+              disabled={isGuestLoading}
+            >
+              {isGuestLoading ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Text style={styles.buttonTextGuest}>Continue as Guest</Text>
+              )}
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
     </ImageBackground>
@@ -1121,6 +1258,8 @@ const styles = StyleSheet.create({
   containerTransparent: {
     flex: 1,
     backgroundColor: "transparent",
+    justifyContent: "center",
+    alignItems: "center",
   },
   backgroundImage: { flex: 1 },
   header: {
@@ -1146,7 +1285,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   profileIconText: { color: "#333", fontWeight: "bold", fontSize: 22 },
-  content: { flex: 1, justifyContent: "center", padding: 20 },
+  content: { flex: 1, justifyContent: "center", padding: 20, width: "90%" },
   scrollContent: { padding: 10, paddingBottom: 50 },
   title: {
     fontSize: 64,
@@ -1158,6 +1297,16 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginBottom: 5,
   },
+  buttonGuest: {
+    backgroundColor: "#33333370",
+    padding: 12,
+    borderRadius: 12,
+    alignItems: "center",
+    borderWidth: 2,
+    borderColor: "#333",
+    flex: 1,
+  },
+  buttonTextGuest: { color: "white", fontWeight: "bold", fontSize: 16 },
   joinCard: {
     backgroundColor: "#dddddd95",
     borderRadius: 20,
@@ -1300,14 +1449,27 @@ const styles = StyleSheet.create({
 
   friendsHeader: {
     flexDirection: "row",
-    justifyContent: "center",
+    justifyContent: "space-between",
     alignItems: "center",
     marginBottom: 6,
+    paddingHorizontal: 6,
+  },
+  friendsHeaderSpacer: {
+    width: 32,
+    height: 32,
   },
   friendsTitle: {
     fontSize: 18,
     fontWeight: "bold",
     color: "#333",
+  },
+  refreshFriendsBtn: {
+    width: 32,
+    height: 32,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 16,
+    backgroundColor: "#ffffff95",
   },
   friendsListVertical: { gap: 10 },
   friendRow: {
