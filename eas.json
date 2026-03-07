@@ -6,19 +6,12 @@
   "build": {
     "preview": {
       "android": {
-        "buildType": "apk",
-        "gradleCommand": ":app:assembleRelease"
-      },
-      "ios": {
-        "buildType": "simulator"
+        "buildType": "apk"
       }
     },
     "production": {
       "android": {
         "buildType": "apk"
-      },
-      "ios": {
-        "buildType": "release"
       }
     }
   }
