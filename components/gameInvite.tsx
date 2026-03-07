@@ -113,7 +113,6 @@ export default function GameInviteModal({
               <Text style={styles.confirmText}>Join Game</Text>
             </TouchableOpacity>
           </View>
-          <View style={styles.tape2} />
         </Animated.View>
       </View>
     </Modal>
@@ -123,7 +122,7 @@ export default function GameInviteModal({
 const styles = StyleSheet.create({
   modalOverlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.3)",
+    backgroundColor: "rgba(0,0,0,0.6)",
     justifyContent: "center",
     alignItems: "center",
     padding: 20,
@@ -143,28 +142,18 @@ const styles = StyleSheet.create({
     shadowRadius: 0,
     elevation: 10,
     position: "relative",
+    transform: [{ rotate: "-0.5deg" }],
   },
   tape: {
     position: "absolute",
     top: -15,
-    left: -40,
     width: 100,
     height: 30,
-    backgroundColor: "rgba(205, 205, 205, 0.8)",
-    transform: [{ rotate: "-80deg" }],
+    alignSelf: "center",
+    backgroundColor: "rgba(255,255,255,0.8)",
+    transform: [{ rotate: "-2deg" }],
     borderWidth: 1,
-    borderColor: "#000000",
-  },
-  tape2: {
-    position: "absolute",
-    top: -15,
-    left: 230,
-    width: 100,
-    height: 30,
-    backgroundColor: "rgba(205, 205, 205, 0.8)",
-    transform: [{ rotate: "10deg" }],
-    borderWidth: 1,
-    borderColor: "#000000",
+    borderColor: "#ddd",
   },
   modalTitle: {
     fontSize: 22,

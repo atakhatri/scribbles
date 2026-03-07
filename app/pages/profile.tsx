@@ -44,6 +44,13 @@ const UPDATE_JSON_URL =
 
 const AVATAR_GRADIENTS = GRADIENTS;
 
+interface MatchSummary {
+  roomId: string;
+  score: number;
+  won: boolean;
+  playedAt: number;
+}
+
 export default function ProfileScreen() {
   const router = useRouter();
   const auth = getAuth();
@@ -57,7 +64,7 @@ export default function ProfileScreen() {
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [displayName, setDisplayName] = useState(user?.displayName || "");
   const [stats, setStats] = useState({ wins: 0, totalGames: 0, score: 0 });
-  const [recentGames, setRecentGames] = useState<any[]>([]);
+  const [lastMatches, setLastMatches] = useState<MatchSummary[]>([]);
   const [activeTab, setActiveTab] = useState<"profile" | "settings">("profile");
   const [selectedGradientIndex, setSelectedGradientIndex] = useState(-1);
   const [downloadProgress, setDownloadProgress] = useState(0);
@@ -126,25 +133,10 @@ export default function ProfileScreen() {
               score: data.totalScore || 0,
             });
 
-            // Fetch recent games based on references in user doc
-            const recentGameRefs = data.recentGames || [];
-            if (recentGameRefs.length > 0) {
-              const gameIds = recentGameRefs.map((ref: any) => ref.gameId);
-              const gamesRef = collection(db, "games");
-              const q = query(gamesRef, where("__name__", "in", gameIds));
-              const gamesSnap = await getDocs(q);
-              const gamesData = gamesSnap.docs.map((d) => ({
-                id: d.id,
-                ...d.data(),
-              }));
-              // Sort games based on the order in the user's recentGames array
-              const sortedGames = gameIds
-                .map((id: string) => gamesData.find((game) => game.id === id))
-                .filter(Boolean); // Filter out any games that might have been deleted
-              setRecentGames(sortedGames);
-            } else {
-              setRecentGames([]);
-            }
+            const matches = Array.isArray(data.lastMatches)
+              ? data.lastMatches
+              : [];
+            setLastMatches(matches.slice(0, 5));
 
             if (data.avatarGradientIndex !== undefined) {
               setSelectedGradientIndex(data.avatarGradientIndex);
@@ -606,52 +598,62 @@ export default function ProfileScreen() {
                     </View>
                   </View>
 
-                  {/* Recent Games List */}
+                  {/* Recent Matches List */}
                   <View style={styles.recentGamesContainer}>
-                    <Text style={styles.sectionTitle}>Recent Games</Text>
-                    {recentGames.length === 0 ? (
-                      <Text style={styles.emptyText}>No games played yet.</Text>
+                    <Text style={styles.sectionTitle}>Recent Matches</Text>
+                    {lastMatches.length === 0 ? (
+                      <Text style={styles.emptyText}>
+                        No matches played yet.
+                      </Text>
                     ) : (
-                      recentGames.map((game) => {
-                        const myScore = game.scores?.[user?.uid || ""] || 0;
-                        const allScores = Object.values(game.scores || {});
-                        const maxScore =
-                          allScores.length > 0
-                            ? Math.max(...(allScores as number[]))
-                            : 0;
-                        const isWinner = myScore > 0 && myScore === maxScore;
-
+                      lastMatches.map((match, index) => {
                         return (
-                          <View key={game.id} style={styles.gameRow}>
+                          <View
+                            key={`${match.roomId}-${match.playedAt}-${index}`}
+                            style={styles.gameRow}
+                          >
                             <View style={styles.gameIcon}>
                               <Ionicons
-                                name="game-controller-outline"
+                                name={
+                                  match.won
+                                    ? "trophy"
+                                    : "game-controller-outline"
+                                }
                                 size={20}
-                                color="#fff"
+                                color={match.won ? "#FFD700" : "#fff"}
                               />
                             </View>
                             <View style={styles.gameInfo}>
                               <Text style={styles.gameId}>
-                                {game.id.substring(0, 4)}
+                                Room: {match.roomId || "----"}
                               </Text>
                               <Text style={styles.gameDate}>
-                                {game.createdAt
+                                {match.playedAt
                                   ? new Date(
-                                      game.createdAt,
+                                      match.playedAt,
                                     ).toLocaleDateString()
                                   : "--/--/----"}
                               </Text>
                             </View>
                             <View style={styles.gameScore}>
-                              {isWinner && (
+                              {match.won && (
                                 <Ionicons
                                   name="trophy"
                                   size={16}
                                   color="#FFD700"
                                 />
                               )}
+                              <Text
+                                style={{
+                                  color: match.won ? "#FFD700" : "#FCA5A5",
+                                  fontWeight: "700",
+                                  fontSize: 12,
+                                }}
+                              >
+                                {match.won ? "Won" : "Lost"}
+                              </Text>
                               <Text style={styles.scoreValue}>
-                                {myScore} pts
+                                {match.score || 0} pts
                               </Text>
                             </View>
                           </View>
@@ -764,6 +766,7 @@ export default function ProfileScreen() {
       <Modal visible={isDownloading} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
+            <View style={styles.modalTape} />
             <Text style={styles.modalTitle}>Downloading Update...</Text>
             <View style={styles.progressBarContainer}>
               <View
@@ -784,6 +787,7 @@ export default function ProfileScreen() {
       <Modal visible={showLogoutModal} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
+            <View style={styles.modalTape} />
             <Text style={styles.modalTitle}>Log Out?</Text>
             <Text style={styles.modalSubtitle}>
               Are you sure you want to sign out?
@@ -1177,28 +1181,47 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
+    backgroundColor: "rgba(0,0,0,0.6)",
     justifyContent: "center",
     alignItems: "center",
     padding: 20,
   },
   modalContent: {
-    backgroundColor: "white",
-    borderRadius: 20,
-    padding: 20,
+    backgroundColor: "#fff9f2",
+    borderRadius: 2,
+    padding: 25,
     alignItems: "center",
-    width: "80%",
-    elevation: 5,
+    width: "100%",
+    maxWidth: 320,
+    borderWidth: 3,
+    borderColor: "#333",
+    shadowColor: "#000",
+    shadowOffset: { width: 8, height: 8 },
+    shadowOpacity: 0.4,
+    shadowRadius: 0,
+    elevation: 10,
+    position: "relative",
+    transform: [{ rotate: "-0.5deg" }],
+  },
+  modalTape: {
+    position: "absolute",
+    top: -15,
+    width: 100,
+    height: 30,
+    backgroundColor: "rgba(255,255,255,0.8)",
+    transform: [{ rotate: "-2deg" }],
+    borderWidth: 1,
+    borderColor: "#ddd",
   },
   modalTitle: {
-    fontSize: 18,
-    fontWeight: "bold",
+    fontSize: 22,
+    fontWeight: "900",
     color: "#333",
     marginBottom: 10,
     textAlign: "center",
   },
   modalSubtitle: {
-    fontSize: 16,
+    fontSize: 15,
     color: "#666",
     marginBottom: 20,
     textAlign: "center",
@@ -1211,26 +1234,31 @@ const styles = StyleSheet.create({
   },
   cancelBtn: {
     flex: 1,
-    padding: 12,
-    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 8,
     backgroundColor: "#ddd",
     alignItems: "center",
     borderWidth: 2,
     borderColor: "#333",
+    minWidth: 80,
   },
-  cancelText: { color: "#333", fontWeight: "bold" },
+  cancelText: { color: "#333", fontWeight: "bold", fontSize: 14 },
   confirmBtn: {
     flex: 1,
-    padding: 12,
-    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 8,
     backgroundColor: "#FF6B6B",
     alignItems: "center",
     borderWidth: 2,
     borderColor: "#333",
+    minWidth: 80,
   },
   confirmText: {
     color: "white",
     fontWeight: "bold",
+    fontSize: 14,
   },
   progressBarContainer: {
     width: "100%",

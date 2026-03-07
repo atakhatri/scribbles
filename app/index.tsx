@@ -1466,7 +1466,11 @@ export default function Index() {
           >
             <View style={styles.modalOverlay}>
               <View style={styles.modalContent}>
+                <View style={styles.modalTape} />
                 <Text style={styles.modalTitle}>Create Room</Text>
+                <Text style={styles.modalSubtitle}>
+                  Set rounds for this lobby
+                </Text>
                 <View style={styles.createGroupPanel}>
                   <View style={styles.roundsSelector}>
                     <Text style={styles.roundsLabel}>Rounds</Text>
@@ -1955,40 +1959,80 @@ const styles = StyleSheet.create({
   // Modal Styles
   modalOverlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
+    backgroundColor: "rgba(0,0,0,0.6)",
     justifyContent: "center",
+    alignItems: "center",
     padding: 20,
   },
   modalContent: {
-    backgroundColor: "#fffaeeff",
-    borderRadius: 20,
-    padding: 20,
+    backgroundColor: "#fff9f2",
+    borderRadius: 2,
+    padding: 25,
     alignItems: "center",
     width: "100%",
-    maxWidth: 400,
-    alignSelf: "center",
+    maxWidth: 320,
+    borderWidth: 3,
+    borderColor: "#333",
+    shadowColor: "#000",
+    shadowOffset: { width: 8, height: 8 },
+    shadowOpacity: 0.4,
+    shadowRadius: 0,
+    elevation: 10,
+    position: "relative",
+    transform: [{ rotate: "-0.5deg" }],
+  },
+  modalTape: {
+    position: "absolute",
+    top: -15,
+    width: 100,
+    height: 30,
+    backgroundColor: "rgba(255,255,255,0.8)",
+    transform: [{ rotate: "-2deg" }],
+    borderWidth: 1,
+    borderColor: "#ddd",
   },
   modalTitle: {
     fontSize: 24,
-    fontWeight: "bold",
+    fontWeight: "900",
     color: "#333",
-    marginBottom: 20,
+    marginBottom: 10,
+    textAlign: "center",
   },
-  modalButtons: { flexDirection: "row", gap: 10, width: "100%" },
+  modalSubtitle: {
+    fontSize: 15,
+    color: "#555",
+    marginBottom: 20,
+    textAlign: "center",
+    fontWeight: "600",
+  },
+  modalButtons: {
+    flexDirection: "row",
+    gap: 15,
+    width: "100%",
+    justifyContent: "center",
+  },
   cancelBtn: {
     flex: 1,
-    padding: 15,
-    borderRadius: 10,
-    backgroundColor: "#333",
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 8,
+    backgroundColor: "#ddd",
     alignItems: "center",
+    borderWidth: 2,
+    borderColor: "#333",
+    minWidth: 80,
   },
-  cancelText: { color: "#ddd", fontWeight: "bold" },
+  cancelText: { color: "#333", fontWeight: "bold", fontSize: 14 },
   confirmBtn: {
     flex: 1,
-    padding: 15,
-    borderRadius: 10,
-    backgroundColor: "#e27d4aff",
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 8,
+    backgroundColor: "#4ECDC4",
     alignItems: "center",
+    borderWidth: 2,
+    borderColor: "#333",
+    minWidth: 80,
   },
-  confirmText: { color: "white", fontWeight: "bold" },
+  confirmText: { color: "#333", fontWeight: "bold", fontSize: 14 },
 });

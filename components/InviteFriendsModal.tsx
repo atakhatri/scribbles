@@ -127,6 +127,7 @@ export default function InviteFriendsModal({
     >
       <Pressable style={styles.overlay} onPress={handleClose}>
         <Pressable style={styles.card} onPress={(e) => e.stopPropagation()}>
+          <View style={styles.tape} />
           <View style={styles.header}>
             <Text style={styles.title}>Invite Friends</Text>
             <TouchableOpacity onPress={handleClose} style={styles.closeButton}>
@@ -197,23 +198,38 @@ export default function InviteFriendsModal({
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
+    backgroundColor: "rgba(0,0,0,0.6)",
     justifyContent: "center",
     alignItems: "center",
     padding: 20,
   },
   card: {
     width: "100%",
-    maxWidth: 400,
-    backgroundColor: "#fffaeeff",
-    borderRadius: 24,
-    padding: 20,
+    maxWidth: 360,
+    backgroundColor: "#fff9f2",
+    borderRadius: 2,
+    padding: 22,
     maxHeight: "70%",
+    borderWidth: 3,
+    borderColor: "#333",
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25,
-    shadowRadius: 10,
+    shadowOffset: { width: 8, height: 8 },
+    shadowOpacity: 0.4,
+    shadowRadius: 0,
     elevation: 10,
+    transform: [{ rotate: "-0.5deg" }],
+    position: "relative",
+  },
+  tape: {
+    position: "absolute",
+    top: -15,
+    width: 100,
+    height: 30,
+    alignSelf: "center",
+    backgroundColor: "rgba(255,255,255,0.8)",
+    transform: [{ rotate: "-2deg" }],
+    borderWidth: 1,
+    borderColor: "#ddd",
   },
   header: {
     flexDirection: "row",
@@ -227,7 +243,9 @@ const styles = StyleSheet.create({
   title: { fontSize: 22, fontWeight: "800", color: "#333" },
   closeButton: {
     padding: 8,
-    backgroundColor: "rgba(0,0,0,0.05)",
+    backgroundColor: "#ddd",
+    borderWidth: 1,
+    borderColor: "#333",
     borderRadius: 20,
   },
   row: {

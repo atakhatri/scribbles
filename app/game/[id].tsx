@@ -117,6 +117,7 @@ export default function GameRoom() {
   const [lastDrawer, setLastDrawer] = useState<string | null>(null);
   const didLeaveRoomRef = useRef(false);
   const hasJoinedRoomRef = useRef(false);
+  const hasScheduledFinishedCleanupRef = useRef(false);
   const lastStalePruneAtRef = useRef(0);
   const lastPresencePruneAtRef = useRef(0);
 
@@ -353,22 +354,30 @@ export default function GameRoom() {
           const userCollection = await getUserCollection(userId);
           const userRef = doc(db, userCollection, userId);
 
-          // Get current recent games to update them
+          // Keep last 5 match summaries in user profile so history survives room deletion.
           const userSnap = await getDoc(userRef);
           const userData = userSnap.data();
-          const currentRecentGames = userData?.recentGames || [];
+          const currentLastMatches = Array.isArray(userData?.lastMatches)
+            ? userData.lastMatches
+            : [];
 
-          // Add the new game and keep the list at a max of 5
-          const newRecentGames = [
-            { gameId: id, playedAt: Date.now() },
-            ...currentRecentGames,
-          ].slice(0, 5);
+          const latestMatch = {
+            roomId: id,
+            score: myScore,
+            won: isWinner,
+            playedAt: Date.now(),
+          };
+
+          const newLastMatches = [latestMatch, ...currentLastMatches].slice(
+            0,
+            5,
+          );
 
           const updatePayload = {
             totalGames: increment(1),
             totalScore: increment(myScore),
             wins: isWinner ? increment(1) : increment(0),
-            recentGames: newRecentGames,
+            lastMatches: newLastMatches,
           };
 
           // If document exists, update it; otherwise create it with merge
@@ -382,7 +391,7 @@ export default function GameRoom() {
                 totalGames: 1,
                 totalScore: myScore,
                 wins: isWinner ? 1 : 0,
-                recentGames: newRecentGames,
+                lastMatches: newLastMatches,
               },
               { merge: true },
             );
@@ -402,6 +411,28 @@ export default function GameRoom() {
       setLastStatus(currentStatus);
     }
   }, [gameData?.status, userId, lastStatus, hasUpdatedStats]);
+
+  useEffect(() => {
+    if (!id || !userId || !gameData) return;
+    if (gameData.status !== "finished") {
+      hasScheduledFinishedCleanupRef.current = false;
+      return;
+    }
+
+    if (hasScheduledFinishedCleanupRef.current) return;
+
+    hasScheduledFinishedCleanupRef.current = true;
+    // Give clients a short window to persist stats/match history before deleting room.
+    const timeout = setTimeout(async () => {
+      try {
+        await deleteDoc(doc(db, "games", id as string));
+      } catch {
+        // Ignore if already deleted by another action.
+      }
+    }, 12000);
+
+    return () => clearTimeout(timeout);
+  }, [id, userId, gameData?.status]);
 
   // Round change animation
   useEffect(() => {
