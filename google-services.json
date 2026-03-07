@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "966586889084",
+    "project_id": "scribbles-b280a",
+    "storage_bucket": "scribbles-b280a.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:966586889084:android:1435bd114f5d1ec5606af9",
+        "android_client_info": {
+          "package_name": "com.ata.scribbles"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCDRjQw87eh44_QODuIxvmn6us-x4DX4QQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
