@@ -1,3 +1,5 @@
+import { Ionicons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
 import { arrayUnion, doc, getDoc, updateDoc } from "firebase/firestore";
 import React, { useEffect, useState } from "react";
 import {
@@ -8,7 +10,19 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { useToast } from "../context/ToastContext";
+import GRADIENTS from "../data/gradients";
 import { auth, db } from "../firebaseConfig";
+
+const AVATAR_GRADIENTS = GRADIENTS;
+
+const getAvatarGradient = (uid: string) => {
+  let hash = 0;
+  for (let i = 0; i < uid.length; i++) {
+    hash = uid.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return AVATAR_GRADIENTS[Math.abs(hash) % AVATAR_GRADIENTS.length];
+};
 
 export default function InviteFriendsModal({
   visible,
@@ -20,8 +34,14 @@ export default function InviteFriendsModal({
   roomId: string;
 }) {
   const [friends, setFriends] = useState<any[]>([]);
+  const { showToast } = useToast();
+  const [invitedIds, setInviteIds] = useState<string[]>([]);
 
   useEffect(() => {
+    if (!visible) {
+      setInviteIds([]);
+      return;
+    }
     let mounted = true;
     (async () => {
       try {
@@ -49,13 +69,17 @@ export default function InviteFriendsModal({
   }, [visible]);
 
   const sendInvite = async (targetId: string) => {
+    if (invitedIds.includes(targetId)) return;
     try {
       const inviterName = auth.currentUser?.displayName || "A player";
       await updateDoc(doc(db, "users", targetId), {
-        gameInvites: arrayUnion({ roomId, inviterName }),
+        gameInvites: arrayUnion({ roomId, inviterName, timestamp: Date.now() }),
       });
+      setInviteIds((prev) => [...prev, targetId]);
+      showToast({ message: "Invite sent!", type: "success" });
     } catch (e) {
       console.error("Failed to send invite", e);
+      showToast({ message: "Failed to send invite", type: "error" });
     }
   };
 
@@ -63,36 +87,66 @@ export default function InviteFriendsModal({
     <Modal
       visible={visible}
       transparent
-      animationType="slide"
+      animationType="fade"
       onRequestClose={onClose}
     >
       <View style={styles.overlay}>
         <View style={styles.card}>
           <View style={styles.header}>
             <Text style={styles.title}>Invite Friends</Text>
-            <TouchableOpacity onPress={onClose}>
-              <Text style={styles.close}>Close</Text>
+            <TouchableOpacity onPress={onClose} style={styles.closeButton}>
+              <Ionicons name="close" size={24} color="#333" />
             </TouchableOpacity>
           </View>
 
           <FlatList
             data={friends}
             keyExtractor={(i) => i.id}
-            renderItem={({ item }) => (
-              <View style={styles.row}>
-                <Text style={styles.name}>
-                  {item.username || item.displayName || item.id}
-                </Text>
-                <TouchableOpacity
-                  style={styles.inviteBtn}
-                  onPress={() => sendInvite(item.id)}
-                >
-                  <Text style={styles.inviteText}>Invite</Text>
-                </TouchableOpacity>
-              </View>
-            )}
+            showsVerticalScrollIndicator={false}
+            renderItem={({ item }) => {
+              const isInvited = invitedIds.includes(item.id);
+              return (
+                <View style={styles.row}>
+                  <View style={styles.userInfo}>
+                    <LinearGradient
+                      colors={
+                        item.avatarGradientIndex !== undefined &&
+                        item.avatarGradientIndex >= 0 &&
+                        item.avatarGradientIndex < AVATAR_GRADIENTS.length
+                          ? (AVATAR_GRADIENTS[item.avatarGradientIndex] as any)
+                          : (getAvatarGradient(item.id) as any)
+                      }
+                      style={styles.avatar}
+                    >
+                      <Text style={styles.avatarText}>
+                        {item.username?.[0]?.toUpperCase() ||
+                          item.displayName?.[0]?.toUpperCase() ||
+                          "?"}
+                      </Text>
+                    </LinearGradient>
+                    <Text style={styles.name} numberOfLines={1}>
+                      {item.username || item.displayName || item.id}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    style={[styles.inviteBtn, isInvited && styles.invitedBtn]}
+                    onPress={() => sendInvite(item.id)}
+                    disabled={isInvited}
+                  >
+                    <Text
+                      style={[
+                        styles.inviteText,
+                        isInvited && styles.invitedText,
+                      ]}
+                    >
+                      {isInvited ? "Sent" : "Invite"}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              );
+            }}
             ListEmptyComponent={
-              <Text style={styles.empty}>No friends to invite</Text>
+              <Text style={styles.empty}>No friends found.</Text>
             }
           />
         </View>
@@ -104,40 +158,79 @@ export default function InviteFriendsModal({
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.4)",
+    backgroundColor: "rgba(0,0,0,0.5)",
     justifyContent: "center",
     alignItems: "center",
+    padding: 20,
   },
   card: {
-    width: "90%",
+    width: "100%",
+    maxWidth: 400,
+    backgroundColor: "#fffaeeff",
+    borderRadius: 24,
+    padding: 20,
     maxHeight: "70%",
-    backgroundColor: "white",
-    borderRadius: 12,
-    padding: 12,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 10,
+    elevation: 10,
   },
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 8,
+    marginBottom: 15,
+    paddingBottom: 15,
+    borderBottomWidth: 2,
+    borderBottomColor: "rgba(0,0,0,0.05)",
   },
-  title: { fontSize: 18, fontWeight: "700" },
-  close: { color: "#333", fontWeight: "700" },
+  title: { fontSize: 22, fontWeight: "800", color: "#333" },
+  closeButton: {
+    padding: 8,
+    backgroundColor: "rgba(0,0,0,0.05)",
+    borderRadius: 20,
+  },
   row: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    paddingVertical: 10,
+    paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: "#eee",
+    borderBottomColor: "rgba(0,0,0,0.05)",
   },
-  name: { fontSize: 16 },
+  userInfo: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    flex: 1,
+  },
+  avatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  avatarText: { fontSize: 18, fontWeight: "bold", color: "#333" },
+  name: { fontSize: 16, fontWeight: "600", color: "#333", flex: 1 },
   inviteBtn: {
-    backgroundColor: "#4338CA",
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
+    backgroundColor: "#333",
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 12,
+    minWidth: 80,
+    alignItems: "center",
   },
-  inviteText: { color: "white", fontWeight: "700" },
-  empty: { textAlign: "center", color: "#666", marginTop: 20 },
+  invitedBtn: {
+    backgroundColor: "#e0e0e0",
+  },
+  inviteText: { color: "white", fontWeight: "bold", fontSize: 14 },
+  invitedText: { color: "#888" },
+  empty: {
+    textAlign: "center",
+    color: "#888",
+    marginTop: 30,
+    fontStyle: "italic",
+  },
 });

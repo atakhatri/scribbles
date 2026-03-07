@@ -1,14 +1,20 @@
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
-import React from "react";
+import React, { useEffect, useRef } from "react";
 import {
+  Animated,
+  Dimensions,
+  Easing,
   Image,
   ImageBackground,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import ConfettiCannon from "react-native-confetti-cannon";
+import { useToast } from "../context/ToastContext";
 
 interface Player {
   uid: string;
@@ -52,165 +58,345 @@ const getAvatarGradient = (uid: string) => {
 };
 
 export default function Podium({ players, onExit, onPlayAgain }: PodiumProps) {
+  const { playSound } = useToast();
   const first = players[0] || null;
   const second = players[1] || null;
   const third = players[2] || null;
+  const rest = players.slice(3);
+  const { width } = Dimensions.get("window");
+
+  // Animation Values
+  const goldHeight = useRef(new Animated.Value(0)).current;
+  const silverHeight = useRef(new Animated.Value(0)).current;
+  const bronzeHeight = useRef(new Animated.Value(0)).current;
+
+  const winnersOpacity = useRef(new Animated.Value(0)).current;
+  const winnersScale = useRef(new Animated.Value(0.5)).current;
+  const winnersTranslateY = useRef(new Animated.Value(50)).current;
+
+  const listOpacity = useRef(new Animated.Value(0)).current;
+  const listTranslateY = useRef(new Animated.Value(50)).current;
+
+  const buttonsOpacity = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    playSound(require("../assets/sounds/victory.mp3"));
+
+    Animated.sequence([
+      Animated.delay(500), // Brief pause before starting
+      // 1. Pillars rise
+      Animated.parallel([
+        Animated.timing(silverHeight, {
+          toValue: 110,
+          duration: 1000,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: false, // height doesn't support native driver
+        }),
+        Animated.timing(goldHeight, {
+          toValue: 160,
+          duration: 1000,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: false,
+        }),
+        Animated.timing(bronzeHeight, {
+          toValue: 80,
+          duration: 1000,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: false,
+        }),
+      ]),
+      // 2. Winners pop in
+      Animated.parallel([
+        Animated.timing(winnersOpacity, {
+          toValue: 1,
+          duration: 500,
+          useNativeDriver: true,
+        }),
+        Animated.spring(winnersScale, {
+          toValue: 1,
+          friction: 6,
+          useNativeDriver: true,
+        }),
+        Animated.timing(winnersTranslateY, {
+          toValue: 0,
+          duration: 500,
+          useNativeDriver: true,
+        }),
+      ]),
+      // 3. List & Buttons slide in
+      Animated.parallel([
+        Animated.timing(listOpacity, {
+          toValue: 1,
+          duration: 500,
+          useNativeDriver: true,
+        }),
+        Animated.timing(listTranslateY, {
+          toValue: 0,
+          duration: 500,
+          useNativeDriver: true,
+        }),
+        Animated.timing(buttonsOpacity, {
+          toValue: 1,
+          duration: 500,
+          useNativeDriver: true,
+        }),
+      ]),
+    ]).start();
+  }, []);
 
   return (
     <ImageBackground
       source={require("../assets/images/game_over.jpeg")}
       style={styles.container}
-      imageStyle={{ borderRadius: 12, opacity: 1 }}
+      imageStyle={{ opacity: 1 }}
     >
       <View style={styles.overlay} />
-      <Text style={styles.title}>🏆 Game Over 🏆</Text>
+      <ConfettiCannon
+        count={200}
+        origin={{ x: width / 2, y: -20 }}
+        fadeOut={true}
+      />
+      <View style={styles.contentContainer}>
+        <Text style={styles.title}>🏆 Game Over 🏆</Text>
 
-      <View style={styles.podiumRow}>
-        {/* 2nd Place */}
-        <View style={styles.column}>
-          {second ? (
-            <>
-              <View style={styles.avatarContainer}>
-                {second.avatar ? (
-                  <Image
-                    source={{ uri: second.avatar }}
-                    style={styles.avatar}
+        <View style={styles.podiumRow}>
+          {/* 2nd Place */}
+          <View style={styles.column}>
+            <Animated.View
+              style={{
+                opacity: winnersOpacity,
+                transform: [
+                  { scale: winnersScale },
+                  { translateY: winnersTranslateY },
+                ],
+                alignItems: "center",
+              }}
+            >
+              {second ? (
+                <>
+                  <View style={styles.avatarContainer}>
+                    {second.avatar ? (
+                      <Image
+                        source={{ uri: second.avatar }}
+                        style={styles.avatar}
+                      />
+                    ) : (
+                      <LinearGradient
+                        colors={
+                          second.avatarGradientIndex !== undefined &&
+                          second.avatarGradientIndex >= 0 &&
+                          second.avatarGradientIndex < AVATAR_GRADIENTS.length
+                            ? AVATAR_GRADIENTS[second.avatarGradientIndex]
+                            : getAvatarGradient(second.uid)
+                        }
+                        style={styles.avatarPlaceholder}
+                      >
+                        <Text style={styles.avatarInitials}>
+                          {second.displayName.charAt(0).toUpperCase()}
+                        </Text>
+                      </LinearGradient>
+                    )}
+                    <View
+                      style={[styles.rankBadge, { backgroundColor: "#9CA3AF" }]}
+                    >
+                      <Text style={styles.rankText}>2</Text>
+                    </View>
+                  </View>
+                  <Text style={styles.name} numberOfLines={1}>
+                    {second.displayName}
+                  </Text>
+                  <Text style={styles.score}>{second.points} pts</Text>
+                </>
+              ) : null}
+            </Animated.View>
+            <Animated.View
+              style={[styles.bar, styles.silverBar, { height: silverHeight }]}
+            />
+          </View>
+
+          {/* 1st Place */}
+          <View style={styles.columnCenter}>
+            <Animated.View
+              style={{
+                opacity: winnersOpacity,
+                transform: [
+                  { scale: winnersScale },
+                  { translateY: winnersTranslateY },
+                ],
+                alignItems: "center",
+              }}
+            >
+              {first ? (
+                <>
+                  <Ionicons
+                    name="trophy"
+                    size={32}
+                    color="#ffffff"
+                    style={styles.crown}
                   />
-                ) : (
-                  <LinearGradient
-                    colors={
-                      second.avatarGradientIndex !== undefined &&
-                      second.avatarGradientIndex >= 0 &&
-                      second.avatarGradientIndex < AVATAR_GRADIENTS.length
-                        ? AVATAR_GRADIENTS[second.avatarGradientIndex]
-                        : getAvatarGradient(second.uid)
-                    }
-                    style={styles.avatarPlaceholder}
-                  >
-                    <Text style={styles.avatarInitials}>
-                      {second.displayName.charAt(0).toUpperCase()}
-                    </Text>
-                  </LinearGradient>
-                )}
-                <View
-                  style={[styles.rankBadge, { backgroundColor: "#9CA3AF" }]}
-                >
-                  <Text style={styles.rankText}>2</Text>
-                </View>
-              </View>
-              <Text style={styles.name} numberOfLines={1}>
-                {second.displayName}
-              </Text>
-              <Text style={styles.score}>{second.points} pts</Text>
-            </>
-          ) : null}
-          <View style={[styles.bar, styles.silverBar]} />
+                  <View style={styles.avatarContainer}>
+                    {first.avatar ? (
+                      <Image
+                        source={{ uri: first.avatar }}
+                        style={styles.avatarLarge}
+                      />
+                    ) : (
+                      <LinearGradient
+                        colors={
+                          first.avatarGradientIndex !== undefined &&
+                          first.avatarGradientIndex >= 0 &&
+                          first.avatarGradientIndex < AVATAR_GRADIENTS.length
+                            ? AVATAR_GRADIENTS[first.avatarGradientIndex]
+                            : getAvatarGradient(first.uid)
+                        }
+                        style={styles.avatarLargePlaceholder}
+                      >
+                        <Text style={styles.avatarInitialsLarge}>
+                          {first.displayName.charAt(0).toUpperCase()}
+                        </Text>
+                      </LinearGradient>
+                    )}
+                    <View
+                      style={[styles.rankBadge, { backgroundColor: "#F59E0B" }]}
+                    >
+                      <Text style={styles.rankText}>1</Text>
+                    </View>
+                  </View>
+                  <Text style={styles.nameLarge} numberOfLines={1}>
+                    {first.displayName}
+                  </Text>
+                  <Text style={styles.scoreLarge}>{first.points} pts</Text>
+                </>
+              ) : null}
+            </Animated.View>
+            <Animated.View
+              style={[styles.bar, styles.goldBar, { height: goldHeight }]}
+            />
+          </View>
+
+          {/* 3rd Place */}
+          <View style={styles.column}>
+            <Animated.View
+              style={{
+                opacity: winnersOpacity,
+                transform: [
+                  { scale: winnersScale },
+                  { translateY: winnersTranslateY },
+                ],
+                alignItems: "center",
+              }}
+            >
+              {third ? (
+                <>
+                  <View style={styles.avatarContainer}>
+                    {third.avatar ? (
+                      <Image
+                        source={{ uri: third.avatar }}
+                        style={styles.avatar}
+                      />
+                    ) : (
+                      <LinearGradient
+                        colors={
+                          third.avatarGradientIndex !== undefined &&
+                          third.avatarGradientIndex >= 0 &&
+                          third.avatarGradientIndex < AVATAR_GRADIENTS.length
+                            ? AVATAR_GRADIENTS[third.avatarGradientIndex]
+                            : getAvatarGradient(third.uid)
+                        }
+                        style={styles.avatarPlaceholder}
+                      >
+                        <Text style={styles.avatarInitials}>
+                          {third.displayName.charAt(0).toUpperCase()}
+                        </Text>
+                      </LinearGradient>
+                    )}
+                    <View
+                      style={[styles.rankBadge, { backgroundColor: "#D97706" }]}
+                    >
+                      <Text style={styles.rankText}>3</Text>
+                    </View>
+                  </View>
+                  <Text style={styles.name} numberOfLines={1}>
+                    {third.displayName}
+                  </Text>
+                  <Text style={styles.score}>{third.points} pts</Text>
+                </>
+              ) : null}
+            </Animated.View>
+            <Animated.View
+              style={[styles.bar, styles.bronzeBar, { height: bronzeHeight }]}
+            />
+          </View>
         </View>
 
-        {/* 1st Place */}
-        <View style={styles.columnCenter}>
-          {first ? (
-            <>
-              <Ionicons
-                name="trophy"
-                size={32}
-                color="#ffffff"
-                style={styles.crown}
-              />
-              <View style={styles.avatarContainer}>
-                {first.avatar ? (
-                  <Image
-                    source={{ uri: first.avatar }}
-                    style={styles.avatarLarge}
-                  />
-                ) : (
-                  <LinearGradient
-                    colors={
-                      first.avatarGradientIndex !== undefined &&
-                      first.avatarGradientIndex >= 0 &&
-                      first.avatarGradientIndex < AVATAR_GRADIENTS.length
-                        ? AVATAR_GRADIENTS[first.avatarGradientIndex]
-                        : getAvatarGradient(first.uid)
-                    }
-                    style={styles.avatarLargePlaceholder}
-                  >
-                    <Text style={styles.avatarInitialsLarge}>
-                      {first.displayName.charAt(0).toUpperCase()}
-                    </Text>
-                  </LinearGradient>
-                )}
-                <View
-                  style={[styles.rankBadge, { backgroundColor: "#F59E0B" }]}
-                >
-                  <Text style={styles.rankText}>1</Text>
+        {/* Rest of Players List */}
+        {rest.length > 0 && (
+          <Animated.View
+            style={[
+              styles.restListContainer,
+              {
+                opacity: listOpacity,
+                transform: [{ translateY: listTranslateY }],
+              },
+            ]}
+          >
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={styles.restListContent}
+            >
+              {rest.map((p, index) => (
+                <View key={p.uid} style={styles.restRow}>
+                  <View style={styles.restRankBadge}>
+                    <Text style={styles.restRankText}>{index + 4}</Text>
+                  </View>
+                  {p.avatar ? (
+                    <Image
+                      source={{ uri: p.avatar }}
+                      style={styles.restAvatar}
+                    />
+                  ) : (
+                    <LinearGradient
+                      colors={
+                        p.avatarGradientIndex !== undefined &&
+                        p.avatarGradientIndex >= 0 &&
+                        p.avatarGradientIndex < AVATAR_GRADIENTS.length
+                          ? AVATAR_GRADIENTS[p.avatarGradientIndex]
+                          : getAvatarGradient(p.uid)
+                      }
+                      style={styles.restAvatarPlaceholder}
+                    >
+                      <Text style={styles.restAvatarText}>
+                        {p.displayName.charAt(0).toUpperCase()}
+                      </Text>
+                    </LinearGradient>
+                  )}
+                  <Text style={styles.restName} numberOfLines={1}>
+                    {p.displayName}
+                  </Text>
+                  <Text style={styles.restScore}>{p.points} pts</Text>
                 </View>
-              </View>
-              <Text style={styles.nameLarge} numberOfLines={1}>
-                {first.displayName}
-              </Text>
-              <Text style={styles.scoreLarge}>{first.points} pts</Text>
-            </>
-          ) : null}
-          <View style={[styles.bar, styles.goldBar]} />
-        </View>
+              ))}
+            </ScrollView>
+          </Animated.View>
+        )}
 
-        {/* 3rd Place */}
-        <View style={styles.column}>
-          {third ? (
-            <>
-              <View style={styles.avatarContainer}>
-                {third.avatar ? (
-                  <Image source={{ uri: third.avatar }} style={styles.avatar} />
-                ) : (
-                  <LinearGradient
-                    colors={
-                      third.avatarGradientIndex !== undefined &&
-                      third.avatarGradientIndex >= 0 &&
-                      third.avatarGradientIndex < AVATAR_GRADIENTS.length
-                        ? AVATAR_GRADIENTS[third.avatarGradientIndex]
-                        : getAvatarGradient(third.uid)
-                    }
-                    style={styles.avatarPlaceholder}
-                  >
-                    <Text style={styles.avatarInitials}>
-                      {third.displayName.charAt(0).toUpperCase()}
-                    </Text>
-                  </LinearGradient>
-                )}
-                <View
-                  style={[styles.rankBadge, { backgroundColor: "#D97706" }]}
-                >
-                  <Text style={styles.rankText}>3</Text>
-                </View>
-              </View>
-              <Text style={styles.name} numberOfLines={1}>
-                {third.displayName}
-              </Text>
-              <Text style={styles.score}>{third.points} pts</Text>
-            </>
-          ) : null}
-          <View style={[styles.bar, styles.bronzeBar]} />
-        </View>
-      </View>
+        <Animated.View style={[styles.buttonsRow, { opacity: buttonsOpacity }]}>
+          <TouchableOpacity
+            style={[styles.button, styles.exitButton]}
+            onPress={onExit}
+          >
+            <Ionicons name="exit-outline" size={20} color="#333" />
+            <Text style={styles.buttonText}>Exit</Text>
+          </TouchableOpacity>
 
-      <View style={styles.buttonsRow}>
-        <TouchableOpacity
-          style={[styles.button, styles.exitButton]}
-          onPress={onExit}
-        >
-          <Ionicons name="exit-outline" size={20} color="#EF4444" />
-          <Text style={[styles.buttonText, { color: "#EF4444" }]}>Exit</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[styles.button, styles.playAgainButton]}
-          onPress={onPlayAgain}
-        >
-          <Ionicons name="refresh" size={20} color="white" />
-          <Text style={[styles.buttonText, { color: "white" }]}>
-            Play Again
-          </Text>
-        </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.button, styles.playAgainButton]}
+            onPress={onPlayAgain}
+          >
+            <Ionicons name="refresh" size={20} color="#333" />
+            <Text style={styles.buttonText}>Play Again</Text>
+          </TouchableOpacity>
+        </Animated.View>
       </View>
     </ImageBackground>
   );
@@ -219,15 +405,20 @@ export default function Podium({ players, onExit, onPlayAgain }: PodiumProps) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 20,
-    borderRadius: 12,
+    width: "100%",
+    height: "100%",
   },
   overlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(73, 73, 73, 0.21)",
-    borderRadius: 12,
+  },
+  contentContainer: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 20,
+    paddingTop: 60,
+    width: "100%",
   },
   title: {
     fontSize: 32,
@@ -245,6 +436,7 @@ const styles = StyleSheet.create({
     width: "100%",
     gap: 16,
     marginBottom: 20,
+    flexShrink: 0,
   },
   column: {
     flex: 1,
@@ -261,24 +453,24 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 8,
     borderTopRightRadius: 8,
     marginTop: 8,
-    boxShadow: "0px 2px 4px rgba(0,0,0,0.1)",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
     elevation: 3,
   },
   goldBar: {
     backgroundColor: "#FCD34D", // Amber-300
-    height: 160,
     borderWidth: 1,
     borderColor: "#101010",
   },
   silverBar: {
     backgroundColor: "#E5E7EB", // Gray-200
-    height: 110,
     borderWidth: 1,
     borderColor: "#101010",
   },
   bronzeBar: {
     backgroundColor: "#FDBA74", // Orange-300
-    height: 80,
     borderWidth: 1,
     borderColor: "#101010",
   },
@@ -348,7 +540,10 @@ const styles = StyleSheet.create({
   crown: {
     marginBottom: 0,
     zIndex: 10,
-    boxShadow: "0px 2px 2px rgba(0,0,0,0.2)",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 2,
   },
   name: {
     fontSize: 14,
@@ -376,12 +571,82 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     marginBottom: 4,
   },
+  // Rest List Styles
+  restListContainer: {
+    flex: 1,
+    width: "100%",
+    backgroundColor: "rgba(255, 255, 255, 0.9)",
+    borderRadius: 16,
+    marginBottom: 20,
+    overflow: "hidden",
+    borderWidth: 2,
+    borderColor: "#333",
+  },
+  restListContent: {
+    padding: 10,
+  },
+  restRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: "#eee",
+  },
+  restRankBadge: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: "#333",
+    justifyContent: "center",
+    alignItems: "center",
+    marginRight: 10,
+  },
+  restRankText: {
+    color: "white",
+    fontWeight: "bold",
+    fontSize: 12,
+  },
+  restAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    marginRight: 10,
+    borderWidth: 1,
+    borderColor: "#333",
+  },
+  restAvatarPlaceholder: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: "center",
+    alignItems: "center",
+    marginRight: 10,
+    borderWidth: 1,
+    borderColor: "#333",
+  },
+  restAvatarText: {
+    fontSize: 14,
+    fontWeight: "bold",
+    color: "white",
+  },
+  restName: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#333",
+  },
+  restScore: {
+    fontSize: 16,
+    fontWeight: "bold",
+    color: "#333",
+  },
   buttonsRow: {
     flexDirection: "row",
     gap: 12,
-    marginTop: 10,
+    marginTop: "auto",
     width: "100%",
     justifyContent: "center",
+    paddingBottom: 20,
   },
   button: {
     flexDirection: "row",
@@ -392,22 +657,23 @@ const styles = StyleSheet.create({
     minWidth: 140,
     alignItems: "center",
     justifyContent: "center",
-    boxShadow: "0px 2px 3px rgba(0,0,0,0.1)",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
     elevation: 5,
+    borderWidth: 2,
+    borderColor: "#333",
   },
   exitButton: {
-    backgroundColor: "white",
-    borderWidth: 2,
-    borderColor: "#252525",
+    backgroundColor: "#fee2e2",
   },
   playAgainButton: {
-    backgroundColor: "#ffac27",
-    color: "white",
-    borderWidth: 2,
-    borderColor: "#252525",
+    backgroundColor: "#4ECDC4",
   },
   buttonText: {
     fontSize: 16,
     fontWeight: "900",
+    color: "#333",
   },
 });

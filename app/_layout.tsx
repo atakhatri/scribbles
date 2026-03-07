@@ -1,64 +1,128 @@
-import { DefaultTheme, ThemeProvider } from "@react-navigation/native";
+import AnimatedPreloader from "@/components/animatedPreloader";
 import { Stack, useRouter, useSegments } from "expo-router";
-import { StatusBar } from "expo-status-bar";
 import { onAuthStateChanged, User } from "firebase/auth";
-import { useEffect, useState } from "react";
-import { ActivityIndicator, View } from "react-native";
-import { auth } from "../firebaseConfig";
+import { doc, updateDoc } from "firebase/firestore";
+import { useEffect, useRef, useState } from "react";
+import { Animated, AppState, StyleSheet, View } from "react-native";
+import { SafeAreaProvider } from "react-native-safe-area-context";
+import { ToastProvider } from "../context/ToastContext";
+import { auth, db } from "../firebaseConfig";
 
 export default function RootLayout() {
-  const [initializing, setInitializing] = useState(true);
+  const [authInitialized, setAuthInitialized] = useState(false);
+  const [splashAnimationFinished, setSplashAnimationFinished] = useState(false);
+  const [splashMounted, setSplashMounted] = useState(true);
   const [user, setUser] = useState<User | null>(null);
   const router = useRouter();
   const segments = useSegments();
+  const fadeAnim = useRef(new Animated.Value(1)).current;
 
-  // Handle user state changes
-  function onAuthStateChangedHandler(user: User | null) {
-    setUser(user);
-    if (initializing) setInitializing(false);
-  }
+  const initializing = !authInitialized || !splashAnimationFinished;
 
   useEffect(() => {
-    const subscriber = onAuthStateChanged(auth, onAuthStateChangedHandler);
-    return subscriber; // unsubscribe on unmount
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setAuthInitialized(true);
+    });
+    return unsubscribe;
   }, []);
 
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSplashAnimationFinished(true);
+    }, 4000);
+    return () => clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!initializing) {
+      Animated.timing(fadeAnim, {
+        toValue: 0,
+        duration: 500,
+        useNativeDriver: true,
+      }).start(() => setSplashMounted(false));
+    }
+  }, [initializing]);
+
+  // Auth Guard
   useEffect(() => {
     if (initializing) return;
 
     const inAuthGroup = segments[0] === "auth";
-    const isLanding = segments[0] === undefined;
 
-    if (!user && !inAuthGroup && !isLanding) {
-      // If user is not signed in and the current path is not in the auth group,
-      // redirect to the login page.
-      router.replace("/auth/login");
-    } else if (user && inAuthGroup) {
-      // If user is signed in and the current path is in the auth group,
-      // redirect to the home page.
+    if (user && inAuthGroup) {
       router.replace("/");
     }
   }, [user, initializing, segments]);
 
-  if (initializing) {
-    return (
-      <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
-        <ActivityIndicator size="large" color="#0000ff" />
-      </View>
-    );
-  }
+  // Online Status Tracker
+  useEffect(() => {
+    if (!user) return;
+
+    const userRef = doc(db, "users", user.uid);
+
+    const setOnline = async () => {
+      try {
+        await updateDoc(userRef, {
+          isOnline: true,
+          lastSeen: Date.now(),
+        });
+      } catch (e) {
+        // ignore
+      }
+    };
+
+    const setOffline = async () => {
+      try {
+        await updateDoc(userRef, {
+          isOnline: false,
+          lastSeen: Date.now(),
+        });
+      } catch (e) {}
+    };
+
+    setOnline();
+    const interval = setInterval(setOnline, 30000); // Heartbeat 30s
+
+    const subscription = AppState.addEventListener("change", (nextAppState) => {
+      if (nextAppState === "active") {
+        setOnline();
+      } else if (nextAppState === "background") {
+        setOffline();
+      }
+    });
+
+    return () => {
+      clearInterval(interval);
+      subscription.remove();
+      setOffline();
+    };
+  }, [user]);
 
   return (
-    <ThemeProvider value={DefaultTheme}>
-      <StatusBar style="dark" />
-      <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="index" />
-        <Stack.Screen name="auth/login" />
-        <Stack.Screen name="auth/register" />
-        <Stack.Screen name="game/[id]" />
-        <Stack.Screen name="profile" />
-        <Stack.Screen name="friends" />
-      </Stack>
-    </ThemeProvider>
+    <ToastProvider>
+      <SafeAreaProvider>
+        <View style={{ flex: 1 }}>
+          <Stack screenOptions={{ headerShown: false }}>
+            <Stack.Screen name="index" />
+            <Stack.Screen name="auth/login" />
+            <Stack.Screen name="auth/register" />
+            <Stack.Screen name="profile" />
+            <Stack.Screen name="friends" />
+            <Stack.Screen name="game/[id]" />
+          </Stack>
+          {splashMounted && (
+            <Animated.View
+              style={[
+                StyleSheet.absoluteFill,
+                { opacity: fadeAnim, zIndex: 9999, backgroundColor: "#fff" },
+              ]}
+            >
+              <AnimatedPreloader />
+            </Animated.View>
+          )}
+        </View>
+      </SafeAreaProvider>
+    </ToastProvider>
   );
 }

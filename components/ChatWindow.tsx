@@ -24,6 +24,7 @@ import {
   View,
   ViewStyle,
 } from "react-native";
+import { useToast } from "../context/ToastContext";
 import { db } from "../firebaseConfig";
 
 interface ChatMessage {
@@ -112,7 +113,7 @@ const FadingMessage = ({
 };
 
 const getLevenshteinDistance = (a: string, b: string) => {
-  const matrix = [];
+  const matrix: number[][] = [];
   for (let i = 0; i <= b.length; i++) matrix[i] = [i];
   for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
   for (let i = 1; i <= b.length; i++) {
@@ -139,20 +140,45 @@ export default function ChatWindow({
   onCorrectGuess,
   avoidKeyboard = true,
 }: ChatProps) {
+  const { playSound } = useToast();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState("");
   const [historyVisible, setHistoryVisible] = useState(false);
-  const flatListRef = useRef<FlatList>(null);
-  const historyListRef = useRef<FlatList>(null);
+  const flatListRef = useRef<FlatList<ChatMessage>>(null);
+  const historyListRef = useRef<FlatList<ChatMessage>>(null);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
+
+  const currentUserRef = useRef(currentUser);
+  const isInitialLoad = useRef(true);
+
+  useEffect(() => {
+    currentUserRef.current = currentUser;
+  }, [currentUser]);
 
   useEffect(() => {
     if (!gameId) return;
 
+    isInitialLoad.current = true;
     const messagesRef = collection(db, "games", gameId, "messages");
     const q = query(messagesRef, orderBy("timestamp", "asc"));
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
+      if (isInitialLoad.current) {
+        isInitialLoad.current = false;
+      } else {
+        snapshot.docChanges().forEach((change) => {
+          if (change.type === "added") {
+            const data = change.doc.data();
+            if (
+              data.isCorrectGuess &&
+              data.userId !== currentUserRef.current?.uid
+            ) {
+              playSound(require("../assets/sounds/correct2.mp3"));
+            }
+          }
+        });
+      }
+
       const msgs: ChatMessage[] = [];
       snapshot.forEach((doc) => {
         msgs.push({ id: doc.id, ...doc.data() } as ChatMessage);
@@ -241,31 +267,52 @@ export default function ChatWindow({
     const inferredIsCorrect = isCorrect || /correctly guessed/i.test(text);
     const inferredIsClose = isClose || /is close/i.test(text);
 
-    let rowStyle: StyleProp<ViewStyle> = styles.messageRow;
-    let textStyle: StyleProp<TextStyle> = styles.messageText;
-    let nameStyle: StyleProp<TextStyle> = styles.userName;
+    let rowStyle = styles.messageRow as StyleProp<ViewStyle>;
+    let textStyle = styles.messageText as StyleProp<TextStyle>;
+    let nameStyle = styles.userName as StyleProp<TextStyle>;
 
     if (inferredIsCorrect) {
-      rowStyle = [styles.messageRow, styles.correctRow];
-      textStyle = [styles.messageText, styles.correctText];
-      nameStyle = [styles.userName, styles.correctText];
+      rowStyle = [styles.messageRow, styles.correctRow] as StyleProp<ViewStyle>;
+      textStyle = [
+        styles.messageText,
+        styles.correctText,
+      ] as StyleProp<TextStyle>;
+      nameStyle = [styles.userName, styles.correctText] as StyleProp<TextStyle>;
     } else if (isClose) {
-      rowStyle = [styles.messageRow, styles.closeRow];
-      textStyle = [styles.messageText, styles.closeText];
-      nameStyle = [styles.userName, styles.closeText];
+      rowStyle = [styles.messageRow, styles.closeRow] as StyleProp<ViewStyle>;
+      textStyle = [
+        styles.messageText,
+        styles.closeText,
+      ] as StyleProp<TextStyle>;
+      nameStyle = [styles.userName, styles.closeText] as StyleProp<TextStyle>;
     } else if (isSystem) {
       if (systemType === "join") {
-        rowStyle = [styles.messageRow, styles.joinRow];
-        textStyle = [styles.messageText, styles.joinText];
-        nameStyle = [styles.userName, styles.joinText];
+        rowStyle = [styles.messageRow, styles.joinRow] as StyleProp<ViewStyle>;
+        textStyle = [
+          styles.messageText,
+          styles.joinText,
+        ] as StyleProp<TextStyle>;
+        nameStyle = [styles.userName, styles.joinText] as StyleProp<TextStyle>;
       } else if (systemType === "leave") {
-        rowStyle = [styles.messageRow, styles.leaveRow];
-        textStyle = [styles.messageText, styles.leaveText];
-        nameStyle = [styles.userName, styles.leaveText];
+        rowStyle = [styles.messageRow, styles.leaveRow] as StyleProp<ViewStyle>;
+        textStyle = [
+          styles.messageText,
+          styles.leaveText,
+        ] as StyleProp<TextStyle>;
+        nameStyle = [styles.userName, styles.leaveText] as StyleProp<TextStyle>;
       } else {
-        rowStyle = [styles.messageRow, styles.systemRow];
-        textStyle = [styles.messageText, styles.systemText];
-        nameStyle = [styles.userName, styles.systemText];
+        rowStyle = [
+          styles.messageRow,
+          styles.systemRow,
+        ] as StyleProp<ViewStyle>;
+        textStyle = [
+          styles.messageText,
+          styles.systemText,
+        ] as StyleProp<TextStyle>;
+        nameStyle = [
+          styles.userName,
+          styles.systemText,
+        ] as StyleProp<TextStyle>;
       }
     }
     return { rowStyle, textStyle, nameStyle };
@@ -311,18 +358,18 @@ export default function ChatWindow({
       enabled={avoidKeyboard}
       behavior={Platform.OS === "ios" ? "padding" : "height"}
       keyboardVerticalOffset={Platform.OS === "ios" ? 100 : 100}
-      style={styles.container}
+      style={styles.container as any}
       pointerEvents="box-none"
     >
-      <View style={styles.inputContainer} pointerEvents="auto">
+      <View style={styles.inputContainer as any} pointerEvents="auto">
         <TouchableOpacity
-          style={styles.historyButton}
+          style={styles.historyButton as any}
           onPress={() => setHistoryVisible(true)}
         >
           <Ionicons name="time" size={36} color="#555" />
         </TouchableOpacity>
         <TextInput
-          style={styles.input}
+          style={styles.input as any}
           value={inputText}
           onChangeText={setInputText}
           placeholder={
@@ -331,9 +378,9 @@ export default function ChatWindow({
           placeholderTextColor="#999"
           onSubmitEditing={handleSend}
         />
-        <TouchableOpacity onPress={handleSend} style={styles.sendButton}>
+        <TouchableOpacity onPress={handleSend} style={styles.sendButton as any}>
           {/* <Text style={styles.sendText}>Send</Text> */}
-          <Text style={styles.sendText}>➤</Text>
+          <Text style={styles.sendText as any}>➤</Text>
         </TouchableOpacity>
       </View>
       <FlatList
@@ -341,8 +388,8 @@ export default function ChatWindow({
         data={messages.slice(-5)}
         renderItem={renderItem}
         keyExtractor={(item) => item.id}
-        style={styles.list}
-        contentContainerStyle={styles.listContent}
+        style={styles.list as any}
+        contentContainerStyle={styles.listContent as any}
         pointerEvents="box-none"
       />
 
@@ -352,17 +399,17 @@ export default function ChatWindow({
         animationType="slide"
         onRequestClose={() => setHistoryVisible(false)}
       >
-        <View style={styles.modalOverlay}>
+        <View style={styles.modalOverlay as any}>
           <TouchableOpacity
-            style={styles.modalBackdrop}
+            style={styles.modalBackdrop as any}
             activeOpacity={1}
             onPress={() => setHistoryVisible(false)}
           />
-          <View style={styles.historyPanel}>
-            <View style={styles.historyHeader}>
-              <Text style={styles.historyTitle}>Chat History</Text>
+          <View style={styles.historyPanel as any}>
+            <View style={styles.historyHeader as any}>
+              <Text style={styles.historyTitle as any}>Chat History</Text>
               <TouchableOpacity onPress={() => setHistoryVisible(false)}>
-                <View style={styles.closeButton}>
+                <View style={styles.closeButton as any}>
                   <Ionicons name="close" size={24} color="#333" />
                 </View>
               </TouchableOpacity>
@@ -372,15 +419,15 @@ export default function ChatWindow({
               data={messages}
               renderItem={renderHistoryItem}
               keyExtractor={(item) => item.id}
-              style={styles.historyList}
-              contentContainerStyle={styles.historyContent}
+              style={styles.historyList as any}
+              contentContainerStyle={styles.historyContent as any}
               showsVerticalScrollIndicator={false}
               onScroll={handleScroll}
               scrollEventThrottle={16}
             />
             {showScrollBottom && (
               <TouchableOpacity
-                style={styles.scrollToBottomButton}
+                style={styles.scrollToBottomButton as any}
                 onPress={scrollToBottom}
               >
                 <Ionicons name="arrow-down" size={20} color="white" />
@@ -396,13 +443,17 @@ export default function ChatWindow({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "ffffff00",
+    backgroundColor: "#FEF3C7",
     borderRadius: 0,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    borderWidth: 2,
+    borderColor: "#101010",
   },
   list: {
     flex: 1,
-    backgroundColor: "#ffffff00",
-    paddingBottom: 30,
+    backgroundColor: "white",
+    paddingBottom: 20,
   },
   listContent: {
     padding: 10,
@@ -475,9 +526,16 @@ const styles = StyleSheet.create({
   },
   historyButton: {
     marginRight: 8,
-    padding: 2,
-    backgroundColor: "#a7a7a789",
+    padding: 0,
+    backgroundColor: "white",
     borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "#101010",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2,
+    shadowRadius: 1.41,
+    elevation: 2,
   },
   input: {
     flex: 1,
@@ -495,12 +553,20 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     paddingHorizontal: 12,
     backgroundColor: "#1d1d1d",
-    borderRadius: 20,
+    borderRadius: 33,
+    borderWidth: 1,
+    borderColor: "#101010",
+
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2,
+    shadowRadius: 1.41,
+    elevation: 2,
   },
   sendText: {
     color: "white",
     fontWeight: "800",
-    fontSize: 18,
+    fontSize: 16,
     transform: [{ rotate: "-45deg" }, { translateX: 1 }, { translateY: -1 }],
   },
   modalOverlay: {
@@ -509,13 +575,15 @@ const styles = StyleSheet.create({
   },
   modalBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.3)",
+    backgroundColor: "rgba(0, 0, 0, 0)",
   },
   historyPanel: {
     backgroundColor: "white",
     height: "70%",
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
+    borderWidth: 2,
+    borderColor: "#333",
     padding: 16,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: -2 },

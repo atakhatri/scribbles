@@ -15,7 +15,6 @@ import {
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   ImageBackground,
   ScrollView,
   StyleSheet,
@@ -24,7 +23,8 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaProvider } from "react-native-safe-area-context";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useToast } from "../context/ToastContext";
 import GRADIENTS from "../data/gradients";
 import { auth, db } from "../firebaseConfig";
 
@@ -33,6 +33,8 @@ interface UserProfile {
   username: string;
   email: string;
   avatarGradientIndex?: number;
+  isOnline?: boolean;
+  lastSeen?: number;
 }
 
 const AVATAR_GRADIENTS = GRADIENTS;
@@ -45,10 +47,28 @@ const getAvatarGradient = (uid: string) => {
   return AVATAR_GRADIENTS[Math.abs(hash) % AVATAR_GRADIENTS.length];
 };
 
+const formatLastSeen = (timestamp?: number, isOnline?: boolean) => {
+  if (!timestamp) return "Offline";
+  const diff = Date.now() - timestamp;
+
+  // If marked online and heartbeat within 2 mins, show Online
+  if (isOnline && diff < 2 * 60 * 1000) return "Online";
+
+  const minutes = Math.floor(diff / 60000);
+  if (minutes < 1) return "Just now";
+  if (minutes < 60) return `Active ${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `Active ${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `Active ${days}d ago`;
+};
+
 export default function FriendsScreen() {
   const router = useRouter();
   const { inviteToRoomId } = useLocalSearchParams();
   const currentUser = auth.currentUser;
+  const { showToast, showAlert } = useToast();
+  const insets = useSafeAreaInsets();
 
   const [searchText, setSearchText] = useState("");
   const [searchResults, setSearchResults] = useState<UserProfile[]>([]);
@@ -120,6 +140,10 @@ export default function FriendsScreen() {
       querySnapshot.forEach((doc) => {
         loadedUsers.push({ id: doc.id, ...doc.data() } as UserProfile);
       });
+
+      // Sort by Last Seen Descending (Most recent first)
+      loadedUsers.sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
+
       setFunction(loadedUsers);
     } catch (error) {
       console.error("Error fetching users:", error);
@@ -163,7 +187,7 @@ export default function FriendsScreen() {
       setSearchResults(Array.from(foundUsers.values()));
     } catch (error) {
       console.error(error);
-      Alert.alert("Error", "Search failed");
+      showToast({ message: "Search failed", type: "error" });
     } finally {
       setSearching(false);
     }
@@ -181,9 +205,9 @@ export default function FriendsScreen() {
         incomingRequests: arrayUnion(currentUser.uid),
       });
 
-      Alert.alert("Success", "Friend request sent!");
+      showToast({ message: "Friend request sent!", type: "success" });
     } catch (error) {
-      Alert.alert("Error", "Could not send request");
+      showToast({ message: "Could not send request", type: "error" });
     }
   };
 
@@ -204,9 +228,9 @@ export default function FriendsScreen() {
         outgoingRequests: arrayRemove(currentUser.uid),
       });
 
-      Alert.alert("Success", "You are now friends!");
+      showToast({ message: "You are now friends!", type: "success" });
     } catch (error) {
-      Alert.alert("Error", "Could not accept request");
+      showToast({ message: "Could not accept request", type: "error" });
     }
   };
 
@@ -214,10 +238,10 @@ export default function FriendsScreen() {
   const removeSelectedFriends = async () => {
     if (!currentUser || selectedFriends.length === 0) return;
 
-    Alert.alert(
-      "Remove Friends",
-      `Are you sure you want to remove ${selectedFriends.length} friend(s)?`,
-      [
+    showAlert({
+      title: "Remove Friends",
+      message: `Are you sure you want to remove ${selectedFriends.length} friend(s)?`,
+      buttons: [
         { text: "Cancel", style: "cancel" },
         {
           text: "Remove",
@@ -239,12 +263,15 @@ export default function FriendsScreen() {
               setSelectionMode(false);
               setSelectedFriends([]);
             } catch (error) {
-              Alert.alert("Error", "Could not remove some friends");
+              showToast({
+                message: "Could not remove some friends",
+                type: "error",
+              });
             }
           },
         },
       ],
-    );
+    });
   };
 
   // 6. Invite Friend to Room
@@ -260,9 +287,9 @@ export default function FriendsScreen() {
           timestamp: Date.now(),
         }),
       });
-      Alert.alert("Invite Sent", "Invitation sent successfully!");
+      showToast({ message: "Invitation sent successfully!", type: "success" });
     } catch (e) {
-      Alert.alert("Error", "Failed to send invite");
+      showToast({ message: "Failed to send invite", type: "error" });
     }
   };
 
@@ -330,9 +357,12 @@ export default function FriendsScreen() {
       style={styles.backgroundImage}
       resizeMode="cover"
     >
-      <SafeAreaProvider style={styles.container}>
-        <ScrollView style={styles.content}>
-          <View style={styles.header}>
+      <View style={styles.container}>
+        <ScrollView
+          style={styles.content}
+          contentContainerStyle={{ paddingBottom: insets.bottom + 20 }}
+        >
+          <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
             <TouchableOpacity
               onPress={() => router.back()}
               style={styles.backButton}
@@ -342,20 +372,6 @@ export default function FriendsScreen() {
             <Text style={styles.title}>
               {inviteToRoomId ? "Invite Friends" : "Friends"}
             </Text>
-
-            {!inviteToRoomId && friends.length > 0 && (
-              <TouchableOpacity
-                onPress={() => {
-                  setSelectionMode(!selectionMode);
-                  setSelectedFriends([]);
-                }}
-                style={styles.manageButton}
-              >
-                <Text style={styles.manageButtonText}>
-                  {selectionMode ? "Done" : "Manage"}
-                </Text>
-              </TouchableOpacity>
-            )}
 
             <View style={{ width: 50 }} />
           </View>
@@ -368,8 +384,8 @@ export default function FriendsScreen() {
               {requests.map((req) => (
                 <View key={req.id} style={styles.requestCard}>
                   <View>
-                    <Text style={styles.username}>{req.username}</Text>
-                    <Text style={styles.email}>wants to be friends</Text>
+                    <Text style={styles.searchName}>{req.username}</Text>
+                    <Text style={styles.searchEmail}>wants to be friends</Text>
                   </View>
                   <TouchableOpacity
                     style={[
@@ -387,7 +403,6 @@ export default function FriendsScreen() {
 
           {/* SECTION 2: SEARCH */}
           <View style={styles.searchContainer}>
-            <Text style={styles.sectionTitle}>Find Players</Text>
             <View style={styles.inputRow}>
               <TextInput
                 style={styles.input}
@@ -404,7 +419,7 @@ export default function FriendsScreen() {
                 {searching ? (
                   <ActivityIndicator color="white" />
                 ) : (
-                  <Text style={styles.searchButtonText}>Search</Text>
+                  <Ionicons name="search" size={16} color="white" />
                 )}
               </TouchableOpacity>
             </View>
@@ -415,8 +430,8 @@ export default function FriendsScreen() {
                 {searchResults.map((user) => (
                   <View key={user.id} style={styles.userRow}>
                     <View>
-                      <Text style={styles.username}>{user.username}</Text>
-                      <Text style={styles.email}>{user.email}</Text>
+                      <Text style={styles.searchName}>{user.username}</Text>
+                      <Text style={styles.searchEmail}>{user.email}</Text>
                     </View>
                     {renderActionButton(user)}
                   </View>
@@ -433,9 +448,24 @@ export default function FriendsScreen() {
           <View style={styles.divider} />
 
           {/* SECTION 3: FRIENDS LIST */}
-          <Text style={styles.sectionTitle}>
-            Your Friends ({friends.length})
-          </Text>
+          <View style={styles.friendSection}>
+            <Text style={styles.sectionTitle}>
+              Your Friends ({friends.length})
+            </Text>
+            {!inviteToRoomId && friends.length > 0 && (
+              <TouchableOpacity
+                onPress={() => {
+                  setSelectionMode(!selectionMode);
+                  setSelectedFriends([]);
+                }}
+                style={styles.manageButton}
+              >
+                <Text style={styles.manageButtonText}>
+                  {selectionMode ? "Done" : "Manage"}
+                </Text>
+              </TouchableOpacity>
+            )}
+          </View>
 
           {loading && friends.length === 0 ? (
             <ActivityIndicator style={{ marginTop: 20 }} color="#4a90e2" />
@@ -480,10 +510,24 @@ export default function FriendsScreen() {
                         <Text style={styles.avatarText}>
                           {friend.username[0].toUpperCase()}
                         </Text>
+                        {friend.isOnline && (
+                          <View style={styles.onlineIndicatorLarge} />
+                        )}
                       </LinearGradient>
                       <View>
                         <Text style={styles.friendName}>{friend.username}</Text>
-                        <Text style={styles.friendEmail}>Friend</Text>
+                        <Text style={styles.friendEmail}>{friend.email}</Text>
+                        <Text
+                          style={[
+                            styles.friendStatusText,
+                            friend.isOnline &&
+                            Date.now() - (friend.lastSeen || 0) < 120000
+                              ? { color: "#4caf50", fontWeight: "bold" }
+                              : { color: "#333", fontWeight: "bold" },
+                          ]}
+                        >
+                          {formatLastSeen(friend.lastSeen, friend.isOnline)}
+                        </Text>
                       </View>
                     </View>
 
@@ -522,20 +566,20 @@ export default function FriendsScreen() {
 
           <View style={{ height: 40 }} />
         </ScrollView>
-      </SafeAreaProvider>
+      </View>
     </ImageBackground>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#ffffff33" },
+  container: { flex: 1, backgroundColor: "#ffffff00" },
   backgroundImage: { flex: 1 },
   content: { flex: 1, padding: 20 },
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    paddingTop: 30,
+    // paddingTop: 30, // Handled dynamically
     marginBottom: 20,
   },
   backButton: { padding: 0 },
@@ -548,6 +592,12 @@ const styles = StyleSheet.create({
     color: "white",
     marginBottom: 10,
     paddingLeft: 10,
+  },
+  friendSection: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 10,
   },
 
   // Requests
@@ -565,7 +615,7 @@ const styles = StyleSheet.create({
 
   // Search
   searchContainer: {
-    backgroundColor: "#dddddd7f",
+    backgroundColor: "#dddddda0",
     padding: 10,
     borderRadius: 15,
     marginBottom: 20,
@@ -577,17 +627,21 @@ const styles = StyleSheet.create({
     padding: 12,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: "#ddd",
+    borderColor: "#333",
   },
   searchButton: {
     backgroundColor: "#ffaa00ff",
-    paddingHorizontal: 20,
+    padding: 14,
     justifyContent: "center",
-    borderRadius: 8,
+    borderRadius: 100,
+    borderWidth: 1,
+    borderColor: "#333",
   },
   searchButtonText: { color: "white", fontWeight: "bold" },
 
   resultsContainer: { marginTop: 12 },
+  searchName: { fontSize: 16, fontWeight: "bold", color: "#333" },
+  searchEmail: { fontSize: 12, color: "#666", marginTop: 2 },
   userRow: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -631,7 +685,7 @@ const styles = StyleSheet.create({
   // Manage Button
   manageButton: {
     padding: 8,
-    backgroundColor: "rgba(255,255,255,0.2)",
+    backgroundColor: "#dddddda0",
     borderRadius: 8,
   },
   manageButtonText: { color: "white", fontWeight: "bold", fontSize: 14 },
@@ -643,7 +697,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 2,
     borderColor: "#666",
-    backgroundColor: "#ccc",
+    backgroundColor: "#333",
     justifyContent: "center",
     alignItems: "center",
   },
@@ -670,9 +724,10 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    backgroundColor: "#dddddd7f",
+    backgroundColor: "#dddddda0",
     padding: 15,
-    borderRadius: 12,
+    borderTopLeftRadius: 16,
+    borderBottomRightRadius: 16,
     marginBottom: 10,
   },
   avatar: {
@@ -682,11 +737,24 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     marginRight: 15,
+    position: "relative",
   },
-  avatarText: { fontSize: 20, fontWeight: "bold", color: "white" },
-  friendName: { fontSize: 16, fontWeight: "bold", color: "#333" },
-  friendEmail: { fontSize: 12, color: "#434343ff" },
-  username: { fontWeight: "bold", color: "#333" },
+  onlineIndicatorLarge: {
+    position: "absolute",
+    bottom: 0,
+    right: 0,
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: "#4caf50",
+    borderWidth: 2,
+    borderColor: "#dddddd",
+  },
+  avatarText: { fontSize: 20, fontWeight: "bold", color: "#333" },
+  friendName: { fontSize: 18, fontWeight: "bold", color: "#fff" },
+  friendEmail: { fontSize: 16, color: "#333" },
+  username: { fontWeight: "bold", color: "#fff" },
+  friendStatusText: { fontSize: 12, marginTop: 2, fontWeight: "bold" },
   email: { fontSize: 12, color: "#666", marginTop: 2, flexShrink: 1 },
   emptyText: { textAlign: "center", color: "#999", marginTop: 10 },
 });

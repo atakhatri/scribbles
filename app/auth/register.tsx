@@ -4,7 +4,6 @@ import { doc, serverTimestamp, setDoc } from "firebase/firestore";
 import React, { useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   ImageBackground,
   StyleSheet,
   Text,
@@ -12,10 +11,12 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { useToast } from "../../context/ToastContext";
 import { auth, db } from "../../firebaseConfig";
 
 export default function Register() {
   const router = useRouter();
+  const { showToast } = useToast();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [username, setUsername] = useState("");
@@ -23,7 +24,7 @@ export default function Register() {
 
   const handleRegister = async () => {
     if (!email || !password || !username) {
-      Alert.alert("Error", "Please fill in all fields");
+      showToast({ message: "Please fill in all fields", type: "error" });
       return;
     }
 
@@ -51,7 +52,7 @@ export default function Register() {
       // 4. Go to Lobby
       router.replace("/");
     } catch (error: any) {
-      Alert.alert("Registration Failed", error.message);
+      showToast({ message: error.message, type: "error" });
     } finally {
       setLoading(false);
     }
@@ -101,13 +102,6 @@ export default function Register() {
             <Text style={styles.buttonText}>Sign Up</Text>
           )}
         </TouchableOpacity>
-
-        <TouchableOpacity
-          onPress={() => router.back()}
-          style={styles.linkButton}
-        >
-          <Text style={styles.linkText}>Back to Login</Text>
-        </TouchableOpacity>
       </View>
     </ImageBackground>
   );
@@ -119,14 +113,16 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     padding: 20,
-    backgroundColor: "rgba(255, 255, 255, 0.25)",
+    backgroundColor: "rgba(255, 255, 255, 0)",
   },
   title: {
     fontSize: 32,
     fontWeight: "bold",
-    color: "#333",
+    color: "#fff",
     marginBottom: 30,
     textAlign: "center",
+    textTransform: "uppercase",
+    opacity: 1,
   },
   input: {
     backgroundColor: "white",
@@ -142,8 +138,9 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     alignItems: "center",
     marginTop: 10,
+    width: "35%",
   },
   buttonText: { color: "white", fontWeight: "bold", fontSize: 16 },
-  linkButton: { marginTop: 20, alignItems: "center" },
-  linkText: { color: "#333", fontWeight: "bold", fontSize: 16 },
+  linkButton: { marginTop: 20, marginLeft: 4, alignItems: "flex-start" },
+  linkText: { color: "#fff", fontWeight: "bold", fontSize: 16 },
 });

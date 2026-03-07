@@ -3,7 +3,6 @@ import { signInWithEmailAndPassword } from "firebase/auth";
 import React, { useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   ImageBackground,
   StyleSheet,
   Text,
@@ -11,10 +10,12 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { useToast } from "../../context/ToastContext";
 import { auth } from "../../firebaseConfig";
 
 export default function Login() {
   const router = useRouter();
+  const { showToast, playSound } = useToast();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -23,9 +24,10 @@ export default function Login() {
     setLoading(true);
     try {
       await signInWithEmailAndPassword(auth, email, password);
+      playSound(require("../../assets/sounds/intro.mp3"));
       router.replace("/"); // Go back to Lobby
     } catch (error: any) {
-      Alert.alert("Login Failed", error.message);
+      showToast({ message: error.message, type: "error" });
     } finally {
       setLoading(false);
     }
@@ -73,7 +75,13 @@ export default function Login() {
           onPress={() => router.push("/auth/register")}
           style={styles.linkButton}
         >
-          <Text style={styles.linkText}>Don't have an account? Sign Up</Text>
+          <Text style={styles.linkText}>
+            Don't have an account?
+            <Text style={{ color: "#ffeeb0", fontWeight: "bold" }}>
+              {" "}
+              Sign Up
+            </Text>
+          </Text>
         </TouchableOpacity>
 
         {/* <TouchableOpacity
@@ -93,14 +101,16 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     padding: 20,
-    backgroundColor: "rgba(255, 255, 255, 0.29)",
+    backgroundColor: "rgba(255, 255, 255, 0)",
   },
   title: {
     fontSize: 40,
     fontWeight: "bold",
-    color: "#000",
+    color: "#fff",
     marginBottom: 30,
     textAlign: "center",
+    textTransform: "uppercase",
+    opacity: 1,
   },
   input: {
     backgroundColor: "#fff8f2ff",
@@ -116,13 +126,15 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     alignItems: "center",
     marginTop: 10,
+    width: "35%",
+    alignSelf: "flex-start",
   },
   buttonText: { color: "white", fontWeight: "bold", fontSize: 16 },
-  linkButton: { marginTop: 20, alignItems: "center", marginBottom: 5 },
+  linkButton: { marginTop: 20, alignItems: "flex-start", marginBottom: 5 },
   linkText: {
-    color: "#000",
+    color: "#fff",
     opacity: 1,
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: "bold",
     textDecorationLine: "none",
   },

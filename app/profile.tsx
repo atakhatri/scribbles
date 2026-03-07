@@ -1,3 +1,4 @@
+import Preloader from "@/components/preloader";
 import { Ionicons } from "@expo/vector-icons";
 import Constants from "expo-constants";
 import * as FileSystem from "expo-file-system";
@@ -5,11 +6,21 @@ import * as IntentLauncher from "expo-intent-launcher";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import { getAuth, signOut, updateProfile } from "firebase/auth";
-import { doc, getFirestore, onSnapshot, updateDoc } from "firebase/firestore";
-import React, { useEffect, useState } from "react";
+import {
+  collection,
+  doc,
+  getDocs,
+  getFirestore,
+  onSnapshot,
+  query,
+  updateDoc,
+  where,
+} from "firebase/firestore";
+import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
+  Animated,
+  Easing,
   Image,
   KeyboardAvoidingView,
   Linking,
@@ -22,6 +33,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { useToast } from "../context/ToastContext";
 
 const UPDATE_JSON_URL =
   "https://gist.githubusercontent.com/atakhatri/14928794d017d4b66a845d2afb58f487/raw/version.json";
@@ -50,16 +62,21 @@ export default function ProfileScreen() {
   const auth = getAuth();
   const db = getFirestore();
   const user = auth.currentUser;
+  const { showToast, showAlert } = useToast();
 
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState(false);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [displayName, setDisplayName] = useState(user?.displayName || "");
   const [stats, setStats] = useState({ wins: 0, totalGames: 0, score: 0 });
+  const [recentGames, setRecentGames] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState<"profile" | "settings">("profile");
   const [selectedGradientIndex, setSelectedGradientIndex] = useState(-1);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [isDownloading, setIsDownloading] = useState(false);
+  const [showLogoutModal, setShowLogoutModal] = useState(false);
+  const winRateAnim = useRef(new Animated.Value(0)).current;
+  const tabAnim = useRef(new Animated.Value(0)).current;
 
   const currentAppVersion = Constants.expoConfig?.version || "1.0.0";
 
@@ -91,7 +108,7 @@ export default function ProfileScreen() {
 
     const unsubscribe = onSnapshot(
       userDocRef,
-      (docSnap) => {
+      async (docSnap) => {
         if (docSnap.exists()) {
           const data = docSnap.data();
           setStats({
@@ -99,16 +116,37 @@ export default function ProfileScreen() {
             totalGames: data.totalGames || 0,
             score: data.totalScore || 0,
           });
+
+          // Fetch recent games based on references in user doc
+          const recentGameRefs = data.recentGames || [];
+          if (recentGameRefs.length > 0) {
+            const gameIds = recentGameRefs.map((ref: any) => ref.gameId);
+            const gamesRef = collection(db, "games");
+            const q = query(gamesRef, where("__name__", "in", gameIds));
+            const gamesSnap = await getDocs(q);
+            const gamesData = gamesSnap.docs.map((d) => ({
+              id: d.id,
+              ...d.data(),
+            }));
+            // Sort games based on the order in the user's recentGames array
+            const sortedGames = gameIds
+              .map((id: string) => gamesData.find((game) => game.id === id))
+              .filter(Boolean); // Filter out any games that might have been deleted
+            setRecentGames(sortedGames);
+          } else {
+            setRecentGames([]);
+          }
+
           if (data.avatarGradientIndex !== undefined) {
             setSelectedGradientIndex(data.avatarGradientIndex);
           }
           // Sync display name if it changed elsewhere
           if (
-            data.displayName &&
-            data.displayName !== displayName &&
+            (data.username || data.displayName) &&
+            (data.username || data.displayName) !== displayName &&
             !updating
           ) {
-            setDisplayName(data.displayName);
+            setDisplayName(data.username || data.displayName);
           }
         }
         setLoading(false);
@@ -122,6 +160,28 @@ export default function ProfileScreen() {
     return () => unsubscribe();
   }, [user]);
 
+  // Animate Win Rate
+  useEffect(() => {
+    const target =
+      stats.totalGames > 0 ? (stats.wins / stats.totalGames) * 100 : 0;
+    Animated.timing(winRateAnim, {
+      toValue: target,
+      duration: 1500,
+      easing: Easing.out(Easing.exp),
+      useNativeDriver: false,
+    }).start();
+  }, [stats]);
+
+  const handleTabChange = (tab: "profile" | "settings") => {
+    setActiveTab(tab);
+    Animated.spring(tabAnim, {
+      toValue: tab === "profile" ? 0 : 1,
+      useNativeDriver: false,
+      friction: 8,
+      tension: 40,
+    }).start();
+  };
+
   const handleGradientSelect = async (index: number) => {
     setSelectedGradientIndex(index);
     if (user) {
@@ -132,25 +192,63 @@ export default function ProfileScreen() {
   };
 
   const handleUpdateProfile = async () => {
-    if (!user || !displayName.trim()) return;
+    const newName = displayName.trim();
+    if (!user || !newName) return;
+
+    if (newName === user.displayName) return;
+
     setUpdating(true);
     try {
-      await updateProfile(user, { displayName });
-      await updateDoc(doc(db, "users", user.uid), { displayName });
-      Alert.alert("Success", "Profile updated successfully!");
+      // Check uniqueness
+      const usersRef = collection(db, "users");
+      const lowerName = newName.toLowerCase();
+
+      // Check against usernameLower (case-insensitive) and username (exact legacy)
+      const qLower = query(usersRef, where("usernameLower", "==", lowerName));
+      const qExact = query(usersRef, where("username", "==", newName));
+
+      const [snapLower, snapExact] = await Promise.all([
+        getDocs(qLower),
+        getDocs(qExact),
+      ]);
+
+      const isTaken =
+        snapLower.docs.some((d) => d.id !== user.uid) ||
+        snapExact.docs.some((d) => d.id !== user.uid);
+
+      if (isTaken) {
+        showToast({
+          message: "This display name is already taken.",
+          type: "error",
+        });
+        setUpdating(false);
+        return;
+      }
+
+      await updateProfile(user, { displayName: newName });
+      await updateDoc(doc(db, "users", user.uid), {
+        displayName: newName,
+        username: newName,
+        usernameLower: lowerName,
+      });
+      showToast({ message: "Profile updated successfully!", type: "success" });
     } catch (error) {
-      Alert.alert("Error", "Failed to update profile.");
+      showToast({ message: "Failed to update profile.", type: "error" });
     } finally {
       setUpdating(false);
     }
   };
 
   const handleLogout = async () => {
+    setShowLogoutModal(true);
+  };
+
+  const confirmLogout = async () => {
     try {
       await signOut(auth);
       router.replace("/auth/login");
     } catch (error) {
-      Alert.alert("Error", "Failed to sign out.");
+      showToast({ message: "Failed to sign out.", type: "error" });
     }
   };
 
@@ -219,25 +317,25 @@ export default function ProfileScreen() {
       const apkUrl = data.apkUrl;
 
       if (remoteVersion !== currentAppVersion) {
-        Alert.alert(
-          "Update Available",
-          `A new version (${remoteVersion}) is available.\n\nWould you like to download the latest APK?`,
-          [
+        showAlert({
+          title: "Update Available",
+          message: `A new version (${remoteVersion}) is available.\n\nWould you like to download the latest APK?`,
+          buttons: [
             { text: "Later", style: "cancel" },
             {
               text: "Download Now",
               onPress: () => handleDownloadAndInstall(apkUrl),
             },
           ],
-        );
+        });
       } else {
-        Alert.alert(
-          "Up to Date",
-          `You are running the latest version (${currentAppVersion}).`,
-        );
+        showToast({
+          message: `You are running the latest version (${currentAppVersion}).`,
+          type: "success",
+        });
       }
     } catch (error) {
-      Alert.alert("Error", "Could not check for updates.");
+      showToast({ message: "Could not check for updates.", type: "error" });
     } finally {
       setCheckingUpdate(false);
     }
@@ -246,7 +344,7 @@ export default function ProfileScreen() {
   if (loading) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator size="large" color="#FF6B6B" />
+        <Preloader />
       </View>
     );
   }
@@ -305,9 +403,20 @@ export default function ProfileScreen() {
           </View>
 
           <View style={styles.tabContainer}>
+            <Animated.View
+              style={[
+                styles.activeTabIndicator,
+                {
+                  left: tabAnim.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: ["1%", "51%"],
+                  }),
+                },
+              ]}
+            />
             <TouchableOpacity
-              style={[styles.tab, activeTab === "profile" && styles.activeTab]}
-              onPress={() => setActiveTab("profile")}
+              style={styles.tab}
+              onPress={() => handleTabChange("profile")}
             >
               <Text
                 style={[
@@ -319,8 +428,8 @@ export default function ProfileScreen() {
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.tab, activeTab === "settings" && styles.activeTab]}
-              onPress={() => setActiveTab("settings")}
+              style={styles.tab}
+              onPress={() => handleTabChange("settings")}
             >
               <Text
                 style={[
@@ -334,27 +443,128 @@ export default function ProfileScreen() {
           </View>
 
           {activeTab === "profile" ? (
-            <View style={styles.statsGrid}>
-              <View style={styles.statCard}>
-                <View style={styles.iconCircle}>
-                  <Ionicons name="trophy" size={24} color="#FFD700" />
+            <View style={styles.statsContainer}>
+              {/* Hero Stat: Total Score */}
+              <LinearGradient
+                colors={["#6a11cb", "#2575fc"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.heroStatCard}
+              >
+                <View>
+                  <Text style={styles.heroStatLabel}>Total Score</Text>
+                  <Text style={styles.heroStatValue}>{stats.score}</Text>
                 </View>
-                <Text style={styles.statValue}>{stats.wins}</Text>
-                <Text style={styles.statLabel}>Wins</Text>
+                <Ionicons
+                  name="ribbon"
+                  size={80}
+                  color="rgba(255,255,255,0.2)"
+                  style={styles.heroStatIcon}
+                />
+              </LinearGradient>
+
+              <View style={styles.subStatsRow}>
+                {/* Wins */}
+                <LinearGradient
+                  colors={["#f093fb", "#f5576c"]}
+                  style={styles.subStatCard}
+                >
+                  <View style={styles.subStatHeader}>
+                    <Ionicons name="trophy" size={24} color="white" />
+                    <Text style={styles.subStatLabel}>Wins</Text>
+                  </View>
+                  <Text style={styles.subStatValue}>{stats.wins}</Text>
+                </LinearGradient>
+
+                {/* Games Played */}
+                <LinearGradient
+                  colors={["#4facfe", "#00f2fe"]}
+                  style={styles.subStatCard}
+                >
+                  <View style={styles.subStatHeader}>
+                    <Ionicons name="game-controller" size={24} color="white" />
+                    <Text style={styles.subStatLabel}>Played</Text>
+                  </View>
+                  <Text style={styles.subStatValue}>{stats.totalGames}</Text>
+                </LinearGradient>
               </View>
-              <View style={styles.statCard}>
-                <View style={styles.iconCircle}>
-                  <Ionicons name="game-controller" size={24} color="#4ECDC4" />
+              {/* Win Rate Bar */}
+              <View style={styles.winRateContainer}>
+                <View style={styles.winRateHeader}>
+                  <Text style={styles.winRateLabel}>Win Rate</Text>
+                  <Text style={styles.winRatePercent}>
+                    {stats.totalGames > 0
+                      ? Math.round((stats.wins / stats.totalGames) * 100)
+                      : 0}
+                    %
+                  </Text>
                 </View>
-                <Text style={styles.statValue}>{stats.totalGames}</Text>
-                <Text style={styles.statLabel}>Played</Text>
+                <View style={styles.progressBarBg}>
+                  <Animated.View
+                    style={[
+                      styles.progressBarFill,
+                      {
+                        width: winRateAnim.interpolate({
+                          inputRange: [0, 100],
+                          outputRange: ["0%", "100%"],
+                        }),
+                      },
+                    ]}
+                  >
+                    <LinearGradient
+                      colors={["#43e97b", "#38f9d7"]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 0 }}
+                      style={{ flex: 1 }}
+                    />
+                  </Animated.View>
+                </View>
               </View>
-              <View style={styles.statCard}>
-                <View style={styles.iconCircle}>
-                  <Ionicons name="star" size={24} color="#FF9F43" />
-                </View>
-                <Text style={styles.statValue}>{stats.score}</Text>
-                <Text style={styles.statLabel}>Total Score</Text>
+
+              {/* Recent Games List */}
+              <View style={styles.recentGamesContainer}>
+                <Text style={styles.sectionTitle}>Recent Games</Text>
+                {recentGames.length === 0 ? (
+                  <Text style={styles.emptyText}>No games played yet.</Text>
+                ) : (
+                  recentGames.map((game) => {
+                    const myScore = game.scores?.[user?.uid || ""] || 0;
+                    const allScores = Object.values(game.scores || {});
+                    const maxScore =
+                      allScores.length > 0
+                        ? Math.max(...(allScores as number[]))
+                        : 0;
+                    const isWinner = myScore > 0 && myScore === maxScore;
+
+                    return (
+                      <View key={game.id} style={styles.gameRow}>
+                        <View style={styles.gameIcon}>
+                          <Ionicons
+                            name="game-controller-outline"
+                            size={20}
+                            color="#fff"
+                          />
+                        </View>
+                        <View style={styles.gameInfo}>
+                          <Text style={styles.gameId}>
+                            {game.id.substring(0, 4)}
+                          </Text>
+                          <Text style={styles.gameDate}>
+                            {game.createdAt
+                              ? new Date(game.createdAt).toLocaleDateString()
+                              : "--/--/----"}
+                          </Text>
+                        </View>
+                        <View style={styles.gameScore}>
+                          {isWinner && (
+                            <Ionicons name="trophy" size={16} color="#FFD700" />
+                          )}
+                          <Text style={styles.scoreValue}>{myScore} pts</Text>
+                        </View>
+                      </View>
+                    );
+                  })
+                )}
               </View>
             </View>
           ) : (
@@ -416,10 +626,10 @@ export default function ProfileScreen() {
                     size={22}
                     color="white"
                   />
-                  <Text style={styles.settingText}>Software Update</Text>
+                  <Text style={styles.settingText}>Check for Updates</Text>
                 </View>
                 {checkingUpdate ? (
-                  <ActivityIndicator size="small" color="#FF6B6B" />
+                  <ActivityIndicator size="small" color="#ffffff" />
                 ) : (
                   <Text style={styles.versionText}>v{currentAppVersion}</Text>
                 )}
@@ -430,8 +640,8 @@ export default function ProfileScreen() {
                 onPress={handleLogout}
               >
                 <View style={styles.settingInfo}>
-                  <Ionicons name="log-out-outline" size={22} color="#FF6B6B" />
-                  <Text style={[styles.settingText, { color: "#FF6B6B" }]}>
+                  <Ionicons name="log-out-outline" size={22} color="#ff0000" />
+                  <Text style={[styles.settingText, { color: "#ff0000" }]}>
                     Logout
                   </Text>
                 </View>
@@ -457,6 +667,32 @@ export default function ProfileScreen() {
             <Text style={styles.progressText}>
               {Math.round(downloadProgress * 100)}%
             </Text>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Logout Confirmation Modal */}
+      <Modal visible={showLogoutModal} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Log Out?</Text>
+            <Text style={styles.modalSubtitle}>
+              Are you sure you want to sign out?
+            </Text>
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                onPress={() => setShowLogoutModal(false)}
+                style={styles.cancelBtn}
+              >
+                <Text style={styles.cancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={confirmLogout}
+                style={styles.confirmBtn}
+              >
+                <Text style={styles.confirmText}>Log Out</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -492,10 +728,11 @@ const styles = StyleSheet.create({
   },
   backButton: { width: 40, height: 40, justifyContent: "center" },
   headerTitle: {
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: "900",
     color: "white",
     letterSpacing: 1,
+    textTransform: "uppercase",
   },
   scrollContent: { paddingBottom: 40 },
   profileHeader: { alignItems: "center", marginTop: 10, marginBottom: 30 },
@@ -529,46 +766,179 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     padding: 5,
     marginBottom: 25,
+    position: "relative",
   },
-  tab: { flex: 1, paddingVertical: 12, alignItems: "center", borderRadius: 15 },
-  activeTab: { backgroundColor: "#ff861c" },
+  activeTabIndicator: {
+    position: "absolute",
+    top: 5,
+    bottom: 5,
+    width: "48%",
+    backgroundColor: "#ff861c",
+    borderRadius: 15,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+    elevation: 4,
+  },
+  tab: {
+    flex: 1,
+    paddingVertical: 12,
+    alignItems: "center",
+    borderRadius: 15,
+    zIndex: 1,
+  },
   tabText: {
     color: "rgba(255, 255, 255, 0.71)",
     fontWeight: "700",
     fontSize: 15,
   },
   activeTabText: { color: "#333", fontWeight: "800" },
-  statsGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    justifyContent: "space-between",
+  statsContainer: {
     paddingHorizontal: 25,
   },
-  statCard: {
+  heroStatCard: {
+    width: "100%",
+    borderRadius: 25,
+    padding: 25,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 15,
+    overflow: "hidden",
+    elevation: 8,
+    shadowColor: "#6a11cb",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+  },
+  heroStatLabel: {
+    color: "rgba(255,255,255,0.8)",
+    fontSize: 16,
+    fontWeight: "600",
+    marginBottom: 5,
+  },
+  heroStatValue: {
+    color: "white",
+    fontSize: 42,
+    fontWeight: "bold",
+  },
+  heroStatIcon: {
+    position: "absolute",
+    right: -15,
+    bottom: -15,
+    transform: [{ rotate: "15deg" }],
+  },
+  subStatsRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: 15,
+  },
+  subStatCard: {
     width: "48%",
+    borderRadius: 20,
+    padding: 15,
+    height: 110,
+    justifyContent: "space-between",
+    elevation: 5,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+  },
+  subStatHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  subStatLabel: {
+    color: "white",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  subStatValue: {
+    color: "white",
+    fontSize: 28,
+    fontWeight: "bold",
+  },
+  winRateContainer: {
     backgroundColor: "rgba(255,255,255,0.08)",
     borderRadius: 20,
     padding: 20,
-    alignItems: "center",
-    marginBottom: 15,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.1)",
+    marginBottom: 15,
   },
-  iconCircle: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    backgroundColor: "rgba(255,255,255,0.05)",
-    justifyContent: "center",
-    alignItems: "center",
+  winRateHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
     marginBottom: 10,
   },
-  statValue: { fontSize: 24, fontWeight: "800", color: "#eeeeee" },
-  statLabel: {
-    fontSize: 16,
-    color: "rgba(255,255,255,0.5)",
-    marginTop: 2,
+  winRateLabel: {
+    color: "rgba(255,255,255,0.6)",
+    fontSize: 14,
     fontWeight: "600",
+  },
+  winRatePercent: {
+    color: "white",
+    fontSize: 16,
+    fontWeight: "bold",
+  },
+  progressBarBg: {
+    height: 8,
+    backgroundColor: "rgba(255,255,255,0.1)",
+    borderRadius: 4,
+    overflow: "hidden",
+  },
+  progressBarFill: {
+    height: "100%",
+    borderRadius: 4,
+    overflow: "hidden",
+  },
+  recentGamesContainer: {
+    marginTop: 25,
+    marginBottom: 20,
+  },
+  sectionTitle: {
+    color: "white",
+    fontSize: 18,
+    fontWeight: "bold",
+    marginBottom: 15,
+  },
+  gameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(255,255,255,0.08)",
+    padding: 15,
+    borderRadius: 15,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.05)",
+  },
+  gameIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "rgba(255,255,255,0.1)",
+    justifyContent: "center",
+    alignItems: "center",
+    marginRight: 15,
+  },
+  gameInfo: { flex: 1 },
+  gameId: { color: "white", fontWeight: "bold", fontSize: 16 },
+  gameDate: { color: "rgba(255,255,255,0.5)", fontSize: 12, marginTop: 2 },
+  gameScore: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    justifyContent: "flex-end",
+  },
+  scoreValue: { color: "#43e97b", fontWeight: "bold", fontSize: 16 },
+  emptyText: {
+    color: "rgba(255,255,255,0.4)",
+    textAlign: "center",
+    fontStyle: "italic",
+    marginTop: 10,
   },
   gradientSelector: {
     flexDirection: "row",
@@ -656,7 +1026,7 @@ const styles = StyleSheet.create({
   logoutItem: {
     marginTop: 5,
     marginBottom: 30,
-    backgroundColor: "rgba(255, 107, 107, 0.25)",
+    backgroundColor: "rgba(255, 20, 20, 0.2)",
     borderRadius: 15,
     paddingHorizontal: 0,
     paddingVertical: 10,
@@ -665,7 +1035,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     shadowColor: "#FF6B6B",
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
+    shadowOpacity: 1,
     shadowRadius: 10,
     elevation: 15,
   },
@@ -689,6 +1059,42 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     color: "#333",
     marginBottom: 10,
+    textAlign: "center",
+  },
+  modalSubtitle: {
+    fontSize: 16,
+    color: "#666",
+    marginBottom: 20,
+    textAlign: "center",
+    fontWeight: "600",
+  },
+  modalButtons: {
+    flexDirection: "row",
+    gap: 15,
+    width: "100%",
+  },
+  cancelBtn: {
+    flex: 1,
+    padding: 12,
+    borderRadius: 10,
+    backgroundColor: "#ddd",
+    alignItems: "center",
+    borderWidth: 2,
+    borderColor: "#333",
+  },
+  cancelText: { color: "#333", fontWeight: "bold" },
+  confirmBtn: {
+    flex: 1,
+    padding: 12,
+    borderRadius: 10,
+    backgroundColor: "#FF6B6B",
+    alignItems: "center",
+    borderWidth: 2,
+    borderColor: "#333",
+  },
+  confirmText: {
+    color: "white",
+    fontWeight: "bold",
   },
   progressBarContainer: {
     width: "100%",

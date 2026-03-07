@@ -6,18 +6,19 @@ import {
   arrayRemove,
   arrayUnion,
   collection,
+  deleteDoc,
   doc,
   getDoc,
   increment,
   onSnapshot,
   runTransaction,
   serverTimestamp,
+  setDoc,
   updateDoc,
 } from "firebase/firestore";
 import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   Animated,
   Easing,
   Keyboard,
@@ -34,6 +35,7 @@ import InviteFriendsModal from "../../components/InviteFriendsModal";
 import Podium from "../../components/Podium";
 import WaitingLobby from "../../components/WaitingLobby";
 import { WORDS_POOL } from "../../components/words";
+import { useToast } from "../../context/ToastContext";
 import { auth, db } from "../../firebaseConfig";
 
 interface Stroke {
@@ -61,6 +63,7 @@ interface GameData {
 export default function GameRoom() {
   const { id } = useLocalSearchParams();
   const router = useRouter();
+  const { showToast, showAlert, playSound } = useToast();
   const userId = auth.currentUser?.uid;
   const [gameData, setGameData] = useState<GameData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -87,11 +90,45 @@ export default function GameRoom() {
   const [roundAlertText, setRoundAlertText] = useState("");
   const roundAlertOpacity = useRef(new Animated.Value(0)).current;
   const roundAlertScale = useRef(new Animated.Value(0.5)).current;
+  const lastInviteTimestamp = useRef<number>(0);
+  const [lastDrawer, setLastDrawer] = useState<string | null>(null);
+
+  // Time Sync Logic
+  const timeOffsetRef = useRef(0);
+  const getServerTime = () => Date.now() + timeOffsetRef.current;
+  const logTimer = (...args: any[]) => {
+    if (__DEV__) {
+      console.log("[GameTimer]", ...args);
+    }
+  };
+
+  useEffect(() => {
+    if (!userId) return;
+    const syncTime = async () => {
+      try {
+        // Create a temporary doc in 'games' (since we have write access) to get server time
+        const syncRef = doc(db, "games", `SYNC_${userId}_${Math.random()}`);
+        await setDoc(syncRef, { t: serverTimestamp() });
+        const snap = await getDoc(syncRef);
+        if (snap.exists()) {
+          const serverTime = snap.data().t.toMillis();
+          timeOffsetRef.current = serverTime - Date.now();
+          await deleteDoc(syncRef);
+        }
+      } catch (e) {
+        console.log("Time sync failed", e);
+      }
+    };
+    syncTime();
+  }, [userId]);
 
   const TOTAL_ROUNDS_FALLBACK = 5; // fallback rounds if none provided
   const slideAnim = useRef(new Animated.Value(0)).current; // 0 closed, 1 open
 
   useEffect(() => {
+    if (showPlayersMenu) {
+      playSound(require("../../assets/sounds/friendsMenu.mp3"));
+    }
     Animated.timing(slideAnim, {
       toValue: showPlayersMenu ? 1 : 0,
       duration: 220,
@@ -113,6 +150,30 @@ export default function GameRoom() {
       hideSub.remove();
     };
   }, []);
+
+  // Listen for game invites (Toast only)
+  useEffect(() => {
+    if (!userId) return;
+    const unsub = onSnapshot(doc(db, "users", userId), (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        const invites = data.gameInvites || [];
+        if (invites.length > 0) {
+          const latest = invites[invites.length - 1];
+          if (latest.timestamp > lastInviteTimestamp.current) {
+            lastInviteTimestamp.current = latest.timestamp;
+            if (Date.now() - latest.timestamp < 15000) {
+              showToast({
+                message: `${latest.inviterName} invited you to play!`,
+                type: "info",
+              });
+            }
+          }
+        }
+      }
+    });
+    return () => unsub();
+  }, [userId]);
 
   // control lobby visibility based on game status
   useEffect(() => {
@@ -142,16 +203,33 @@ export default function GameRoom() {
           const isWinner = myScore > 0 && myScore === maxScore;
 
           const userRef = doc(db, "users", userId);
+
+          // Get current recent games to update them
+          const userSnap = await getDoc(userRef);
+          const userData = userSnap.data();
+          const currentRecentGames = userData?.recentGames || [];
+
+          // Add the new game and keep the list at a max of 5
+          const newRecentGames = [
+            { gameId: id, playedAt: Date.now() },
+            ...currentRecentGames,
+          ].slice(0, 5);
+
           await updateDoc(userRef, {
             totalGames: increment(1),
             totalScore: increment(myScore),
             wins: isWinner ? increment(1) : increment(0),
+            recentGames: newRecentGames,
           });
         } catch (e) {
           console.error("Failed to update stats", e);
         }
       };
       updateStats();
+    }
+
+    if (lastStatus === "waiting" && currentStatus === "playing") {
+      playSound(require("../../assets/sounds/gameStart.mp3"));
     }
 
     if (currentStatus !== lastStatus) {
@@ -171,6 +249,18 @@ export default function GameRoom() {
     }
 
     if (currentRound > lastSeenRound) {
+      playSound(require("../../assets/sounds/gameStart.mp3"));
+
+      if (userId === gameData.hostId) {
+        addDoc(collection(db, "games", id as string, "messages"), {
+          text: `Round ${currentRound} started!`,
+          isSystem: true,
+          userName: "Game",
+          userId: "system",
+          timestamp: serverTimestamp(),
+        }).catch((err) => console.error("Failed to send round start msg", err));
+      }
+
       if (maxRounds > 1) {
         const text =
           currentRound === maxRounds
@@ -208,7 +298,41 @@ export default function GameRoom() {
       }
       setLastSeenRound(currentRound);
     }
-  }, [gameData?.round, lastSeenRound]);
+  }, [gameData?.round, lastSeenRound, userId, gameData?.hostId, id]);
+
+  useEffect(() => {
+    if (!gameData || !userId) return;
+    const currentDrawer = gameData.currentDrawer;
+
+    if (lastDrawer === null) {
+      setLastDrawer(currentDrawer);
+      return;
+    }
+
+    if (currentDrawer !== lastDrawer) {
+      if (gameData.status === "playing" && userId === gameData.hostId) {
+        const drawerName =
+          playersList.find((p) => p.uid === currentDrawer)?.displayName ||
+          "A player";
+        addDoc(collection(db, "games", id as string, "messages"), {
+          text: `${drawerName} is drawing!`,
+          isSystem: true,
+          userName: "Game",
+          userId: "system",
+          timestamp: serverTimestamp(),
+        }).catch((err) => console.error("Failed to send drawer msg", err));
+      }
+      setLastDrawer(currentDrawer);
+    }
+  }, [
+    gameData?.currentDrawer,
+    lastDrawer,
+    userId,
+    gameData?.hostId,
+    playersList,
+    id,
+    gameData?.status,
+  ]);
 
   useEffect(() => {
     // When a new word is set (new turn starts), hide the tools by default
@@ -231,7 +355,7 @@ export default function GameRoom() {
         const data = docSnap.data() as GameData;
         setGameData(data);
       } else {
-        Alert.alert("Error", "Game not found");
+        showToast({ message: "Game not found", type: "error" });
         router.replace("/");
       }
       setLoading(false);
@@ -346,8 +470,19 @@ export default function GameRoom() {
     const endTs = (gameData as any)?.roundEndTimestamp;
     if (endTs) {
       const update = () => {
-        const secs = Math.max(0, Math.ceil((endTs - Date.now()) / 1000));
+        const secs = Math.max(0, Math.ceil((endTs - getServerTime()) / 1000));
         setRemainingSeconds(secs);
+        if (__DEV__ && secs <= 3) {
+          logTimer("tick", {
+            roomId: id,
+            secs,
+            endTs,
+            now: getServerTime(),
+            drawer: gameData?.currentDrawer,
+            round: gameData?.round,
+            hasWord: !!(gameData as any)?.word,
+          });
+        }
         if (secs <= 0) clearInterval(timer);
       };
       update();
@@ -367,10 +502,24 @@ export default function GameRoom() {
     if (gameData.status !== "playing") return;
     const endTs = (gameData as any)?.roundEndTimestamp;
     if (!endTs) return;
+    if (getServerTime() < endTs - 1000) return;
+
+    // Only the host should trigger the turn change to avoid race conditions/conflicts
+    if (gameData.hostId !== userId) return;
+
     if (timeoutProcessedRef.current === endTs) return; // already processed
     timeoutProcessedRef.current = endTs;
+    logTimer("timeout candidate", {
+      roomId: id,
+      endTs,
+      now: getServerTime(),
+      drawer: gameData.currentDrawer,
+      round: gameData.round,
+      hasWord: !!(gameData as any)?.word,
+    });
 
     (async () => {
+      let didProcessTransition = false;
       try {
         const gameRef = doc(db, "games", id as string);
         await runTransaction(db, async (tx) => {
@@ -378,9 +527,10 @@ export default function GameRoom() {
           if (!snap.exists()) return;
           const data = snap.data() as any;
 
-          // If the timer was updated by another client (it's in the future), abort.
-          // We add a small buffer (2s) for clock skew.
-          if (data.roundEndTimestamp > Date.now() + 2000) return;
+          // Process only if this is still the same active timer window.
+          if (data.status !== "playing") return;
+          if (data.roundEndTimestamp !== endTs) return;
+          if (getServerTime() < data.roundEndTimestamp - 1000) return;
 
           // 1. Word Selection Phase Timeout
           // If word is not selected yet, pick a random word and give time to draw.
@@ -391,12 +541,20 @@ export default function GameRoom() {
                 : ["APPLE", "BANANA", "CAT"];
             const randomWord =
               pool[Math.floor(Math.random() * pool.length)].toUpperCase();
-            const drawingRoundEnd = Date.now() + 120000; // 2 mins to draw
+            const drawingRoundEnd = getServerTime() + 120000; // 2 mins to draw
             tx.update(gameRef, {
               word: randomWord,
               currentWord: randomWord,
               roundEndTimestamp: drawingRoundEnd,
               guessed: [],
+            });
+            didProcessTransition = true;
+            logTimer("word auto-selected after picker timeout", {
+              roomId: id,
+              selectedWord: randomWord,
+              drawingRoundEnd,
+              drawer: data.currentDrawer,
+              round: data.round,
             });
             return;
           }
@@ -404,11 +562,34 @@ export default function GameRoom() {
           // 2. Drawing Phase Timeout (Turn End)
           // Word was selected, but time ran out. Move to next player.
 
+          const msgRef = doc(collection(db, "games", id as string, "messages"));
+          tx.set(msgRef, {
+            text: "Time's up!",
+            isSystem: true,
+            userName: "Game",
+            userId: "system",
+            timestamp: serverTimestamp(),
+          });
+
           const playersRaw = Array.isArray(data.players) ? data.players : [];
           const players: string[] = playersRaw.map((p: any) =>
             typeof p === "string" ? p : p?.uid || p,
           );
           const currentDrawer: string = data.currentDrawer;
+
+          // Award points to the drawer based on how many people guessed
+          const scoresObj = data.scores || {};
+          const guessedArr = Array.isArray(data.guessed)
+            ? data.guessed.filter((uid: string) => uid !== currentDrawer)
+            : [];
+          // Drawer gets points for each guesser. Since time is 0, base points only.
+          // Using the same formula logic: 5 * count
+          const drawerPoints = 5 * guessedArr.length;
+
+          if (currentDrawer && drawerPoints > 0) {
+            scoresObj[currentDrawer] =
+              (scoresObj[currentDrawer] || 0) + drawerPoints;
+          }
 
           // Determine next drawer and whether the round should increment
           let nextDrawer = currentDrawer;
@@ -431,9 +612,10 @@ export default function GameRoom() {
 
           // Next phase is Word Selection (30s)
           const newRoundEnd =
-            newStatus === "playing" ? Date.now() + 30000 : null;
+            newStatus === "playing" ? getServerTime() + 30000 : null;
 
           const updateObj: any = {
+            scores: scoresObj,
             strokes: [],
             word: "",
             currentWord: "",
@@ -445,13 +627,37 @@ export default function GameRoom() {
           };
 
           tx.update(gameRef, updateObj);
+          didProcessTransition = true;
+          logTimer("turn advanced after drawing timeout", {
+            roomId: id,
+            previousDrawer: currentDrawer,
+            nextDrawer,
+            roundBefore: data.round,
+            roundAfter: nextRound,
+            statusAfter: newStatus,
+            nextEndTs: newRoundEnd,
+          });
         });
+        if (!didProcessTransition) {
+          // Release the lock when this invocation was a no-op so the true expiry can be processed later.
+          timeoutProcessedRef.current = null;
+          logTimer("timeout no-op, released lock", {
+            roomId: id,
+            endTs,
+            now: getServerTime(),
+          });
+        }
       } catch (e) {
         console.error("advance on timeout failed", e);
         timeoutProcessedRef.current = null;
+        logTimer("timeout failed, released lock", {
+          roomId: id,
+          endTs,
+          now: getServerTime(),
+        });
       }
     })();
-  }, [remainingSeconds, id, gameData]);
+  }, [remainingSeconds, id, gameData, userId]);
 
   // Ensure current user is added to the room players list once (on mount), and removed on unmount.
   useEffect(() => {
@@ -624,7 +830,7 @@ export default function GameRoom() {
     if (!id) return;
     try {
       await Clipboard.setStringAsync(id as string);
-      Alert.alert("Copied", "Room code copied to clipboard");
+      showToast({ message: "Room code copied to clipboard", type: "success" });
     } catch (e) {
       console.error("Failed to copy room id", e);
     }
@@ -633,21 +839,22 @@ export default function GameRoom() {
   const handleStartGame = async () => {
     if (!gameData) return;
     if (gameData.hostId !== userId) {
-      Alert.alert("Only host", "Only the host can start the game.");
+      showToast({ message: "Only the host can start the game.", type: "info" });
       return;
     }
     if ((gameData.players?.length || 0) < 2) {
-      Alert.alert(
-        "Need more players",
-        "At least 2 players are required to start the game.",
-      );
+      showToast({
+        message: "At least 2 players are required to start the game.",
+        type: "info",
+      });
       return;
     }
 
     try {
       const gameRef = doc(db, "games", id as string);
       const firstDrawer = gameData.players[0]?.uid || gameData.players[0];
-      const roundEnd = Date.now() + 30000; // 30s for word selection
+      const roundEnd = getServerTime() + 30000; // 30s for word selection
+      timeoutProcessedRef.current = null;
       await updateDoc(gameRef, {
         status: "playing",
         round: 1,
@@ -665,6 +872,7 @@ export default function GameRoom() {
   };
 
   const handleCorrectGuess = async (guesserId: string) => {
+    playSound(require("../../assets/sounds/correct.mp3"));
     if (!id) return;
     const gameRef = doc(db, "games", id as string);
 
@@ -693,6 +901,16 @@ export default function GameRoom() {
         // persist guessed array
         tx.update(gameRef, { guessed: guessedArr });
 
+        // Award points to THIS guesser immediately
+        const endTs = data.roundEndTimestamp || getServerTime();
+        const remainingSeconds = Math.max(
+          0,
+          Math.ceil((endTs - getServerTime()) / 1000),
+        );
+        const guesserPoints = 10 + remainingSeconds;
+        const scoresObj: Record<string, number> = data.scores || {};
+        scoresObj[guesserId] = (scoresObj[guesserId] || 0) + guesserPoints;
+
         // Determine non-drawer players who need to guess
         const nonDrawerPlayers = players.filter((p) => p !== currentDrawer);
 
@@ -700,31 +918,16 @@ export default function GameRoom() {
           guessedArr.includes(p),
         );
 
-        if (!allGuessed) return; // wait for all to guess
+        if (!allGuessed) {
+          // Just update the guesser's score and return
+          tx.update(gameRef, { scores: scoresObj });
+          return;
+        }
 
         // All players guessed: compute scoring and advance round immediately
-        const endTs = data.roundEndTimestamp || Date.now();
-        const remainingSeconds = Math.max(
-          0,
-          Math.ceil((endTs - Date.now()) / 1000),
-        );
-
-        // Scoring formula:
-        // - Each guesser gets 10 + remainingSeconds points
-        // - Drawer gets (5 + floor(remainingSeconds/2)) * numberOfGuessers
-        const guesserPoints = 10 + remainingSeconds;
+        // Award points to the drawer
         const drawerPointsPerGuesser = 5 + Math.floor(remainingSeconds / 2);
 
-        const scoresObj: Record<string, number> = data.scores || {};
-
-        // Award points to each guesser (non-drawer players)
-        nonDrawerPlayers.forEach((uid) => {
-          if (guessedArr.includes(uid)) {
-            scoresObj[uid] = (scoresObj[uid] || 0) + guesserPoints;
-          }
-        });
-
-        // Award points to the drawer
         const numGuessers = nonDrawerPlayers.filter((u) =>
           guessedArr.includes(u),
         ).length;
@@ -738,7 +941,7 @@ export default function GameRoom() {
         // cycles back to the beginning of the players list (wraps around).
         let nextDrawer = currentDrawer;
         let shouldIncrementRound = false;
-        if (players.length > 1) {
+        if (players.length > 0) {
           const foundIdx = players.findIndex((p) => p === currentDrawer);
           const idx = foundIdx >= 0 ? foundIdx : 0;
           const nextIdx = (idx + 1) % players.length;
@@ -753,7 +956,8 @@ export default function GameRoom() {
 
         const newStatus = nextRound > maxRounds ? "finished" : "playing";
 
-        const newRoundEnd = Date.now() + 30000; // reset timer for next round (word selection)
+        const newRoundEnd =
+          newStatus === "playing" ? getServerTime() + 30000 : null;
 
         // Update game doc to reflect round end and scoring
         tx.update(gameRef, {
@@ -777,12 +981,12 @@ export default function GameRoom() {
     const w = customWord.trim().toUpperCase();
     if (!w) return;
     if (w.length < 2 || w.length > 20) {
-      Alert.alert("Invalid word", "Word must be 2-20 characters");
+      showToast({ message: "Word must be 2-20 characters", type: "error" });
       return;
     }
     try {
       const gameRef = doc(db, "games", id as string);
-      const roundEnd = Date.now() + 120000;
+      const roundEnd = getServerTime() + 120000;
       await updateDoc(gameRef, {
         word: w,
         currentWord: w,
@@ -804,6 +1008,7 @@ export default function GameRoom() {
   }
 
   const isDrawer = gameData?.currentDrawer === userId;
+  const hasGuessed = gameData?.guessed?.includes(userId || "");
 
   const secretWord = gameData?.word ?? "";
 
@@ -831,16 +1036,24 @@ export default function GameRoom() {
           <View style={styles.header}>
             <TouchableOpacity
               onPress={() => {
-                Alert.alert("Exit Game", "Leave this room?", [
-                  { text: "Cancel", style: "cancel" },
-                  {
-                    text: "Exit",
-                    style: "destructive",
-                    onPress: () => router.replace("/"),
-                  },
-                ]);
+                showAlert({
+                  title: "Exit Game",
+                  message: "Leave this room?",
+                  buttons: [
+                    { text: "Cancel", style: "cancel" },
+                    {
+                      text: "Exit",
+                      style: "destructive",
+                      onPress: () => {
+                        playSound(require("../../assets/sounds/exit.mp3"));
+                        router.replace("/");
+                      },
+                    },
+                  ],
+                });
               }}
               style={styles.exitButton}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
             >
               <Text style={styles.exitText}>Exit</Text>
             </TouchableOpacity>
@@ -920,7 +1133,7 @@ export default function GameRoom() {
                           onPress={async () => {
                             try {
                               const gameRef = doc(db, "games", id as string);
-                              const roundEnd = Date.now() + 120000;
+                              const roundEnd = getServerTime() + 120000;
                               await updateDoc(gameRef, {
                                 word: w,
                                 currentWord: w,
@@ -968,17 +1181,28 @@ export default function GameRoom() {
 
               {!isDrawer && gameData?.status === "playing" && (
                 <View style={styles.wordContainer}>
-                  <Text style={styles.wordLabel}>Guess the word!</Text>
+                  <Text style={styles.wordLabel}>
+                    {hasGuessed ? "You guessed it!" : "Guess the word!"}
+                  </Text>
                   <View style={{ flexDirection: "row", alignItems: "center" }}>
-                    <Text style={styles.secretWord}>
-                      {secretWord
-                        .split("")
-                        .map((c) => (c === " " ? " " : "_ "))
-                        .join("")}
+                    <Text
+                      style={[
+                        styles.secretWord,
+                        hasGuessed && { color: "#22C55E" },
+                      ]}
+                    >
+                      {hasGuessed
+                        ? secretWord
+                        : secretWord
+                            .split("")
+                            .map((c) => (c === " " ? " " : "_ "))
+                            .join("")}
                     </Text>
-                    <Text style={styles.wordLength}>
-                      ({(secretWord || "").replace(/\s+/g, "").length})
-                    </Text>
+                    {!hasGuessed && (
+                      <Text style={styles.wordLength}>
+                        ({(secretWord || "").replace(/\s+/g, "").length})
+                      </Text>
+                    )}
                   </View>
                 </View>
               )}
@@ -1058,6 +1282,15 @@ export default function GameRoom() {
               />
             </View>
           </View>
+
+          {/* Backdrop for Player Menu */}
+          {showPlayersMenu && (
+            <TouchableOpacity
+              style={styles.menuBackdrop}
+              activeOpacity={1}
+              onPress={() => setShowPlayersMenu(false)}
+            />
+          )}
 
           {/* Player Menu Overlay (sliding) */}
           <Animated.View
@@ -1148,9 +1381,9 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    padding: 12,
+    padding: 6,
     paddingTop: 40,
-    backgroundColor: "white",
+    backgroundColor: "#fbbf24",
     borderBottomWidth: 2,
     borderBottomColor: "#333",
     justifyContent: "space-evenly",
@@ -1158,18 +1391,7 @@ const styles = StyleSheet.create({
   headerTitle: {
     fontSize: 16,
     fontWeight: "700",
-    color: "#1F2937",
-  },
-  statusBadge: {
-    backgroundColor: "#E0E7FF",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  statusText: {
-    color: "#4338CA",
-    fontSize: 12,
-    fontWeight: "bold",
+    color: "#333",
   },
   gameContent: {
     flex: 2,
@@ -1240,7 +1462,10 @@ const styles = StyleSheet.create({
     backgroundColor: "white",
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    boxShadow: "0px -2px 3px rgba(0,0,0,0.05)",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
     elevation: 5,
     overflow: "hidden",
   },
@@ -1256,27 +1481,32 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     // gap: 8,
-    backgroundColor: "#E5E7EB",
+    backgroundColor: "#FEF3C7",
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#92400E",
   },
   roomText: {
-    color: "#374151",
+    color: "#333",
     fontSize: 16,
   },
   copyButton: {
     padding: 6,
   },
   roundBadge: {
-    backgroundColor: "#bccbffff",
+    backgroundColor: "#DBEAFE",
     paddingHorizontal: 10,
     paddingVertical: 8,
     borderRadius: 10,
     // marginLeft: 6,
+    borderWidth: 1,
+    borderColor: "#333",
   },
   roundText: {
     color: "#4338CA",
+    fontWeight: "700",
     fontSize: 16,
   },
   playersToggle: {
@@ -1285,17 +1515,8 @@ const styles = StyleSheet.create({
     // marginLeft: 8,
     backgroundColor: "#E5E7EB",
     borderRadius: 8,
-  },
-  headerStartButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: "#4338CA",
-    borderRadius: 8,
-    // marginLeft: 8,
-  },
-  headerStartText: {
-    color: "white",
-    fontWeight: "700",
+    borderWidth: 1,
+    borderColor: "#333",
   },
   exitButton: {
     paddingHorizontal: 10,
@@ -1303,6 +1524,8 @@ const styles = StyleSheet.create({
     backgroundColor: "#FEE2E2",
     borderRadius: 8,
     // marginRight: 8,
+    borderWidth: 1,
+    borderColor: "#333",
   },
   exitText: {
     color: "#B91C1C",
@@ -1314,23 +1537,34 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderRadius: 8,
     // marginRight: 8,
+    borderWidth: 1,
+    borderColor: "#333",
   },
   timerText: {
     color: "#4338CA",
     fontWeight: "700",
     fontSize: 16,
   },
+  menuBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.3)",
+    zIndex: 15,
+  },
   playersOverlay: {
     position: "absolute",
-    right: 12,
-    top: 100,
+    right: 0,
+    top: 40,
     width: 300,
     bottom: 20,
     backgroundColor: "white",
-    borderRadius: 12,
+    borderTopLeftRadius: 12,
+    borderBottomLeftRadius: 12,
     boxShadow: "0px 4px 8px rgba(0,0,0,0.08)",
     elevation: 10,
     padding: 12,
+    borderWidth: 1,
+    borderColor: "#333",
+    zIndex: 20,
   },
   playersHeader: {
     flexDirection: "row",
@@ -1340,8 +1574,9 @@ const styles = StyleSheet.create({
   },
   playersTitle: {
     fontSize: 16,
+    textTransform: "uppercase",
     fontWeight: "700",
-    color: "#111827",
+    color: "#333",
   },
   playersList: {
     flex: 1,
@@ -1353,7 +1588,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingVertical: 8,
     borderBottomWidth: 1,
-    borderBottomColor: "#F3F4F6",
+    borderBottomColor: "#E5E7EB",
   },
   playerName: {
     fontSize: 14,
@@ -1389,6 +1624,8 @@ const styles = StyleSheet.create({
     padding: 10,
     borderRadius: 8,
     alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#333",
   },
   inviteText: {
     color: "#374151",
@@ -1400,6 +1637,8 @@ const styles = StyleSheet.create({
     padding: 10,
     borderRadius: 8,
     alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#333",
   },
   startText: {
     color: "white",
@@ -1435,6 +1674,8 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     backgroundColor: "#FBBF24",
     borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#92400E",
   },
   wordOptionText: {
     color: "#111827",
@@ -1474,6 +1715,8 @@ const styles = StyleSheet.create({
     borderRadius: 33,
     justifyContent: "center",
     alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#333",
   },
   wordPickerHeader: {
     flexDirection: "row",
@@ -1508,7 +1751,7 @@ const styles = StyleSheet.create({
     fontSize: 36,
     fontWeight: "900",
     color: "#FBBF24", // Amber-400
-    textShadowColor: "#B91C1C", // Red-700
+    textShadowColor: "#B91C1C",
     textShadowOffset: { width: 3, height: 3 },
     textShadowRadius: 0,
     textAlign: "center",
