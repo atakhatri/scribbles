@@ -124,12 +124,12 @@ export default function GameRoom() {
     try {
       // Try fetching from users collection first
       const usersDoc = await db.collection("users").doc(userId).get();
-      if (usersDoc.exists()) {
+      if (usersDoc.exists) {
         return "users";
       }
       // If not in users, check guestUsers
       const guestUsersDoc = await db.collection("guestUsers").doc(userId).get();
-      return guestUsersDoc.exists() ? "guestUsers" : "guestUsers"; // Default to guestUsers for new guest users
+      return guestUsersDoc.exists ? "guestUsers" : "guestUsers"; // Default to guestUsers for new guest users
     } catch (e) {
       console.error("Error determining user collection:", e);
       return "guestUsers"; // Default to guestUsers on error to prevent crashes
@@ -146,7 +146,7 @@ export default function GameRoom() {
           .doc(`SYNC_${userId}_${Math.random()}`);
         await syncRef.set({ t: firestore.FieldValue.serverTimestamp() });
         const snap = await syncRef.get();
-        if (snap.exists()) {
+        if (snap.exists) {
           const serverTime = snap.data().t.toMillis();
           timeOffsetRef.current = serverTime - Date.now();
           await syncRef.delete();
@@ -174,7 +174,7 @@ export default function GameRoom() {
 
     await db.runTransaction(async (tx) => {
       const docSnap = await tx.get(gameRef);
-      if (!docSnap.exists()) return;
+      if (!docSnap.exists) return;
       const data = docSnap.data() as any;
 
       const currentPlayers = Array.isArray(data.players) ? data.players : [];
@@ -277,7 +277,7 @@ export default function GameRoom() {
       easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
     }).start();
-  }, [showPlayersMenu, slideAnim]);
+  }, [showPlayersMenu, slideAnim, playSound]);
 
   // Listen for keyboard visibility to adjust layout
   useEffect(() => {
@@ -296,29 +296,52 @@ export default function GameRoom() {
   // Listen for game invites (Toast only)
   useEffect(() => {
     if (!userId) return;
-    const unsub = db
-      .collection("users")
-      .doc(userId)
-      .onSnapshot((docSnap) => {
-        if (docSnap.exists()) {
-          const data = docSnap.data();
-          const invites = data.gameInvites || [];
-          if (invites.length > 0) {
-            const latest = invites[invites.length - 1];
-            if (latest.timestamp > lastInviteTimestamp.current) {
-              lastInviteTimestamp.current = latest.timestamp;
-              if (Date.now() - latest.timestamp < 15000) {
-                showToast({
-                  message: `${latest.inviterName} invited you to play!`,
-                  type: "info",
-                });
+
+    const checkInvites = async () => {
+      try {
+        const userCollection = await getUserCollection(userId);
+        const unsub = db
+          .collection(userCollection)
+          .doc(userId)
+          .onSnapshot(
+            (docSnap) => {
+              if (docSnap.exists) {
+                const data = docSnap.data();
+                const invites = data?.gameInvites || [];
+                if (invites.length > 0) {
+                  const latest = invites[invites.length - 1];
+                  if (latest.timestamp > lastInviteTimestamp.current) {
+                    lastInviteTimestamp.current = latest.timestamp;
+                    if (Date.now() - latest.timestamp < 15000) {
+                      showToast({
+                        message: `${latest.inviterName} invited you to play!`,
+                        type: "info",
+                      });
+                    }
+                  }
+                }
               }
-            }
-          }
-        }
-      });
-    return () => unsub();
-  }, [userId]);
+            },
+            (error) => {
+              console.error("Game invite listener error:", error);
+            },
+          );
+        return unsub;
+      } catch (error) {
+        console.error("Error setting up invite listener:", error);
+        return () => {};
+      }
+    };
+
+    let unsub: (() => void) | undefined;
+    checkInvites().then((unsubscribe) => {
+      unsub = unsubscribe;
+    });
+
+    return () => {
+      if (unsub) unsub();
+    };
+  }, [userId, showToast]);
 
   // control lobby visibility based on game status
   useEffect(() => {
@@ -343,15 +366,50 @@ export default function GameRoom() {
         try {
           const scores = gameData?.scores || {};
           const myScore = scores[userId] || 0;
-          const allScores = Object.values(scores);
+          const allScores = Object.values(scores).filter(
+            (s): s is number => typeof s === "number",
+          );
           const maxScore = allScores.length > 0 ? Math.max(...allScores) : 0;
           const isWinner = myScore > 0 && myScore === maxScore;
 
+          // Use robust getUserCollection with retry logic
           const userCollection = await getUserCollection(userId);
           const userRef = db.collection(userCollection).doc(userId);
 
-          // Keep last 5 match summaries in user profile so history survives room deletion.
+          // Verify document exists before updating
           const userSnap = await userRef.get();
+
+          if (!userSnap.exists) {
+            console.warn(
+              `User document ${userId} not found in ${userCollection}`,
+            );
+            // Try to create the document with initial data
+            try {
+              await userRef.set(
+                {
+                  totalGames: 1,
+                  totalScore: myScore,
+                  wins: isWinner ? 1 : 0,
+                  lastMatches: [
+                    {
+                      roomId: id,
+                      score: myScore,
+                      won: isWinner,
+                      playedAt: Date.now(),
+                    },
+                  ],
+                  createdAt: Date.now(),
+                },
+                { merge: true },
+              );
+              console.log("Created new user stats document");
+            } catch (createError) {
+              console.error("Failed to create user stats:", createError);
+            }
+            return;
+          }
+
+          // Keep last 5 match summaries in user profile so history survives room deletion.
           const userData = userSnap.data();
           const currentLastMatches = Array.isArray(userData?.lastMatches)
             ? userData.lastMatches
@@ -378,23 +436,11 @@ export default function GameRoom() {
             lastMatches: newLastMatches,
           };
 
-          // If document exists, update it; otherwise create it with merge
-          if (userSnap.exists) {
-            await userRef.update(updatePayload);
-          } else {
-            // Create document with initial stats if it doesn't exist
-            await userRef.set(
-              {
-                totalGames: 1,
-                totalScore: myScore,
-                wins: isWinner ? 1 : 0,
-                lastMatches: newLastMatches,
-              },
-              { merge: true },
-            );
-          }
-        } catch (e) {
-          console.error("Failed to update stats", e);
+          await userRef.update(updatePayload);
+          console.log("Successfully updated user stats");
+        } catch (error) {
+          console.error("Failed to update stats:", error);
+          // Don't crash the app, just log the error
         }
       };
       updateStats();
@@ -557,7 +603,7 @@ export default function GameRoom() {
 
     const gameRef = db.collection("games").doc(id as string);
     const unsubscribe = gameRef.onSnapshot((docSnap) => {
-      if (docSnap.exists()) {
+      if (docSnap.exists) {
         const data = docSnap.data() as GameData;
         setGameData(data);
       } else {
@@ -568,7 +614,7 @@ export default function GameRoom() {
     });
 
     return () => unsubscribe();
-  }, [id]);
+  }, [id, router, showToast]);
 
   // Remove player when app goes background/inactive (covers swipe-close and task switch on mobile)
   useEffect(() => {
@@ -718,7 +764,7 @@ export default function GameRoom() {
 
         const presence = presenceSnap.val() || {};
 
-        if (!gameSnap.exists()) return;
+        if (!gameSnap.exists) return;
 
         const game = gameSnap.data() as any;
         if (game.status === "finished") return;
@@ -999,7 +1045,7 @@ export default function GameRoom() {
         const gameRef = db.collection("games").doc(id as string);
         await db.runTransaction(async (tx) => {
           const snap = await tx.get(gameRef);
-          if (!snap.exists()) return;
+          if (!snap.exists) return;
           const data = snap.data() as any;
 
           // Process only if this is still the same active timer window.
@@ -1147,7 +1193,7 @@ export default function GameRoom() {
     (async () => {
       try {
         const snap = await gameRef.get();
-        const players = snap.exists() ? (snap.data() as any).players || [] : [];
+        const players = snap.exists ? (snap.data() as any).players || [] : [];
         const already = players.some((p: any) =>
           typeof p === "string" ? p === userId : p?.uid === userId,
         );
@@ -1303,7 +1349,7 @@ export default function GameRoom() {
     try {
       const gameRef = db.collection("games").doc(id as string);
       const snap = await gameRef.get();
-      if (!snap.exists()) return;
+      if (!snap.exists) return;
       const data = snap.data() as any;
       const strokes = Array.isArray(data.strokes) ? data.strokes.slice() : [];
       if (strokes.length === 0) return;
@@ -1368,7 +1414,7 @@ export default function GameRoom() {
     try {
       await db.runTransaction(async (tx) => {
         const snap = await tx.get(gameRef);
-        if (!snap.exists()) return;
+        if (!snap.exists) return;
         const data = snap.data() as any;
 
         const playersRaw = Array.isArray(data.players) ? data.players : [];
@@ -1563,7 +1609,9 @@ export default function GameRoom() {
             <View style={styles.roomBar}>
               <Text style={styles.roomText}>{id}</Text>
               <TouchableOpacity
-                onPress={copyRoomIdToClipboard}
+                onPress={() => {
+                  copyRoomIdToClipboard();
+                }}
                 style={styles.copyButton}
               >
                 <Ionicons name="copy" size={16} color="#374151" />
@@ -1577,7 +1625,9 @@ export default function GameRoom() {
               </Text>
             </View>
             <TouchableOpacity
-              onPress={() => setShowPlayersMenu((v) => !v)}
+              onPress={() => {
+                setShowPlayersMenu((v) => !v);
+              }}
               style={styles.playersToggle}
             >
               <Ionicons name="people" size={22} color="#333" />
@@ -1751,7 +1801,9 @@ export default function GameRoom() {
                         />
                         <TouchableOpacity
                           style={styles.closeToolsButton}
-                          onPress={() => setShowDrawingTools(false)}
+                          onPress={() => {
+                            setShowDrawingTools(false);
+                          }}
                         >
                           <Ionicons name="close" size={20} color="white" />
                         </TouchableOpacity>
@@ -1760,7 +1812,9 @@ export default function GameRoom() {
                       <View pointerEvents="auto">
                         <TouchableOpacity
                           style={styles.showToolsButton}
-                          onPress={() => setShowDrawingTools(true)}
+                          onPress={() => {
+                            setShowDrawingTools(true);
+                          }}
                         >
                           <Ionicons name="brush" size={28} color="white" />
                         </TouchableOpacity>
@@ -1804,7 +1858,12 @@ export default function GameRoom() {
           >
             <View style={styles.playersHeader}>
               <Text style={styles.playersTitle}>Players</Text>
-              <TouchableOpacity onPress={() => setShowPlayersMenu(false)}>
+              <TouchableOpacity
+                onPress={() => {
+                  playSound(require("../../assets/sounds/lock.mp3"));
+                  setShowPlayersMenu(false);
+                }}
+              >
                 <Ionicons name="close" size={22} color="#111827" />
               </TouchableOpacity>
             </View>

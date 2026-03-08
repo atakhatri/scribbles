@@ -35,23 +35,58 @@ const generateGuestUsername = () => {
 // Sign in as guest
 export const signInAsGuest = async () => {
     try {
+        // Validate Firebase is initialized
+        if (!auth || !db) {
+            throw new Error("Firebase not initialized");
+        }
+
+        // Check if auth is ready
+        if (typeof auth.signInAnonymously !== "function") {
+            throw new Error("Anonymous authentication not available");
+        }
+
+        console.log("Attempting anonymous sign in...");
         const userCredential = await auth.signInAnonymously();
+
+        if (!userCredential || !userCredential.user) {
+            throw new Error("Failed to create anonymous user");
+        }
+
         const user = userCredential.user;
+        console.log("Anonymous user created:", user.uid);
+
         const guestUsername = generateGuestUsername();
 
         // Create guest user document in guestUsers collection
+        console.log("Creating guest user document...");
         await db.collection("guestUsers").doc(user.uid).set({
             username: guestUsername,
             email: "Guest",
             isGuest: true,
             createdAt: firestore.FieldValue.serverTimestamp(),
             friends: [],
+            isOnline: false,
+            lastSeen: Date.now(),
         });
 
+        // Verify document was created
+        console.log("Verifying guest user document...");
+        const docCheck = await db.collection("guestUsers").doc(user.uid).get();
+        if (!docCheck.exists) {
+            throw new Error("Failed to verify guest user document creation");
+        }
+
+        console.log("Guest user document created and verified successfully");
         return user;
-    } catch (error) {
+    } catch (error: any) {
         console.error("Error signing in as guest:", error);
-        throw error;
+        console.error("Error code:", error?.code);
+        console.error("Error message:", error?.message);
+
+        // Re-throw with more context
+        const errorMessage = error?.message || "Unknown error";
+        const errorCode = error?.code || "unknown";
+        throw new Error(`Guest login failed: ${errorMessage} (${errorCode})`);
     }
 };
 

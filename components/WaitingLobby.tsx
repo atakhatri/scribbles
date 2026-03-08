@@ -46,8 +46,6 @@ export default function WaitingLobby({
   const me = auth.currentUser;
 
   const leaveRoom = async () => {
-    // playSound(require("../assets/sounds/lock.mp3"));
-
     showAlert({
       title: "Leave Lobby",
       message: "Do you want to leave this lobby?",
@@ -123,7 +121,7 @@ export default function WaitingLobby({
               style={styles.inviteBtn}
               onPress={() => {
                 setShowInvite(true);
-                playSound(require("../assets/sounds/lock.mp3"));
+                playSound(require("../assets/sounds/click.mp3"));
               }}
             >
               <Ionicons name="add" size={30} color="#666" />

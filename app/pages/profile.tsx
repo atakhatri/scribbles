@@ -2,6 +2,7 @@ import Preloader from "@/components/preloader";
 import { useToast } from "@/context/ToastContext";
 import GRADIENTS from "@/data/gradients";
 import { cleanupGuestAccount } from "@/utils/guestAuth";
+import { getUserCollection } from "@/utils/userCollectionHelper";
 import { Ionicons } from "@expo/vector-icons";
 import Constants from "expo-constants";
 import * as FileSystem from "expo-file-system";
@@ -52,7 +53,9 @@ export default function ProfileScreen() {
   const [displayName, setDisplayName] = useState(user?.displayName || "");
   const [stats, setStats] = useState({ wins: 0, totalGames: 0, score: 0 });
   const [lastMatches, setLastMatches] = useState<MatchSummary[]>([]);
-  const [activeTab, setActiveTab] = useState<"profile" | "settings">("profile");
+  const [activeTab, setActiveTab] = useState<"profile" | "settings">(
+    "settings",
+  );
   const [selectedGradientIndex, setSelectedGradientIndex] = useState(-1);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [isDownloading, setIsDownloading] = useState(false);
@@ -85,64 +88,61 @@ export default function ProfileScreen() {
       setLoading(false);
       return;
     }
-    // Check if user is a guest by checking both collections
-    const checkUserCollection = async () => {
-      // First try users collection
-      let userDocRef = db.collection("users").doc(user.uid);
-      let docSnap = await userDocRef.get();
+    // Use robust getUserCollection utility
+    const setupListener = async () => {
+      try {
+        const userCollection = await getUserCollection(user.uid);
+        const userDocRef = db.collection(userCollection).doc(user.uid);
 
-      if (!docSnap.exists) {
-        // Try guestUsers collection
-        userDocRef = db.collection("guestUsers").doc(user.uid);
-        docSnap = await userDocRef.get();
+        setIsGuest(userCollection === "guestUsers");
 
-        if (docSnap.exists) {
-          setIsGuest(true);
-        }
-      } else {
-        setIsGuest(false);
+        const unsubscribe = userDocRef.onSnapshot(
+          async (docSnap) => {
+            if (docSnap.exists) {
+              const data = docSnap.data();
+              setStats({
+                wins: data?.wins || 0,
+                totalGames: data?.totalGames || 0,
+                score: data?.totalScore || 0,
+              });
+
+              const matches = Array.isArray(data?.lastMatches)
+                ? data.lastMatches
+                : [];
+              setLastMatches(matches.slice(0, 5));
+
+              if (data?.avatarGradientIndex !== undefined) {
+                setSelectedGradientIndex(data.avatarGradientIndex);
+              }
+              // Sync display name if it changed elsewhere
+              if (
+                (data?.username || data?.displayName) &&
+                (data.username || data.displayName) !== displayName &&
+                !updating
+              ) {
+                setDisplayName(data.username || data.displayName);
+              }
+            }
+            setLoading(false);
+          },
+          (error) => {
+            console.error("Error listening to user data:", error);
+            setLoading(false);
+          },
+        );
+
+        return unsubscribe;
+      } catch (error) {
+        console.error("Error setting up profile listener:", error);
+        setLoading(false);
+        return () => {};
       }
-
-      return userDocRef;
     };
 
     let unsubscribe: (() => void) | undefined;
 
-    checkUserCollection().then((userDocRef) => {
-      unsubscribe = userDocRef.onSnapshot(
-        async (docSnap) => {
-          if (docSnap.exists) {
-            const data = docSnap.data();
-            setStats({
-              wins: data.wins || 0,
-              totalGames: data.totalGames || 0,
-              score: data.totalScore || 0,
-            });
-
-            const matches = Array.isArray(data.lastMatches)
-              ? data.lastMatches
-              : [];
-            setLastMatches(matches.slice(0, 5));
-
-            if (data.avatarGradientIndex !== undefined) {
-              setSelectedGradientIndex(data.avatarGradientIndex);
-            }
-            // Sync display name if it changed elsewhere
-            if (
-              (data.username || data.displayName) &&
-              (data.username || data.displayName) !== displayName &&
-              !updating
-            ) {
-              setDisplayName(data.username || data.displayName);
-            }
-          }
-          setLoading(false);
-        },
-        (error) => {
-          console.error("Error listening to user data:", error);
-          setLoading(false);
-        },
-      );
+    setupListener().then((unsub) => {
+      unsubscribe = unsub;
     });
 
     return () => {
@@ -252,7 +252,7 @@ export default function ProfileScreen() {
 
   const handleLogout = async () => {
     setShowLogoutModal(true);
-    playSound(require("../../assets/sounds/lock.mp3"));
+    playSound(require("../../assets/sounds/pop.mp3"));
   };
 
   const confirmLogout = async () => {
@@ -617,22 +617,6 @@ export default function ProfileScreen() {
                               </Text>
                             </View>
                             <View style={styles.gameScore}>
-                              {match.won && (
-                                <Ionicons
-                                  name="trophy"
-                                  size={16}
-                                  color="#FFD700"
-                                />
-                              )}
-                              <Text
-                                style={{
-                                  color: match.won ? "#FFD700" : "#FCA5A5",
-                                  fontWeight: "700",
-                                  fontSize: 12,
-                                }}
-                              >
-                                {match.won ? "Won" : "Lost"}
-                              </Text>
                               <Text style={styles.scoreValue}>
                                 {match.score || 0} pts
                               </Text>
@@ -687,7 +671,10 @@ export default function ProfileScreen() {
                         styles.saveButton,
                         { opacity: updating ? 0.7 : 1 },
                       ]}
-                      onPress={handleUpdateProfile}
+                      onPress={() => {
+                        playSound(require("../../assets/sounds/lock.mp3"));
+                        handleUpdateProfile();
+                      }}
                       disabled={updating}
                     >
                       {updating ? (
@@ -702,7 +689,9 @@ export default function ProfileScreen() {
 
                   <TouchableOpacity
                     style={styles.settingItem}
-                    onPress={checkForUpdates}
+                    onPress={() => {
+                      checkForUpdates();
+                    }}
                   >
                     <View style={styles.settingInfo}>
                       <Ionicons
@@ -776,6 +765,7 @@ export default function ProfileScreen() {
             <View style={styles.modalButtons}>
               <TouchableOpacity
                 onPress={() => {
+                  playSound(require("../../assets/sounds/lock.mp3"));
                   setShowLogoutModal(false);
                 }}
                 style={styles.cancelBtn}

@@ -100,6 +100,7 @@ export default function InviteFriendsModal({
   const sendInvite = async (targetId: string) => {
     if (invitedIds.includes(targetId)) return;
     try {
+      playSound(require("../assets/sounds/lock.mp3"));
       const inviterName = auth.currentUser?.displayName || "A player";
 
       // Determine target collection

@@ -1,6 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import React from "react";
 import { ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
+import { useToast } from "../context/ToastContext";
 
 interface DrawingToolsProps {
   selectedColor: string;
@@ -33,6 +34,8 @@ export default function DrawingTools({
   onClear,
   onUndo,
 }: DrawingToolsProps) {
+  const { playSound } = useToast();
+
   return (
     <View style={styles.container}>
       {/* Color Picker */}
@@ -85,11 +88,20 @@ export default function DrawingTools({
 
         {/* Actions */}
         <View style={styles.actions}>
-          <TouchableOpacity onPress={onUndo} style={styles.actionButton}>
+          <TouchableOpacity
+            onPress={() => {
+              playSound(require("../assets/sounds/click.mp3"));
+              onUndo();
+            }}
+            style={styles.actionButton}
+          >
             <Ionicons name="arrow-undo" size={20} color="#4B5563" />
           </TouchableOpacity>
           <TouchableOpacity
-            onPress={onClear}
+            onPress={() => {
+              playSound(require("../assets/sounds/vanish.mp3"));
+              onClear();
+            }}
             style={[styles.actionButton, styles.clearButton]}
           >
             <Ionicons name="trash-outline" size={20} color="#EF4444" />

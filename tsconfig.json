@@ -5,8 +5,7 @@
     "jsx": "react-native",
     "moduleResolution": "bundler",
     "skipLibCheck": true,
-    "ignoreDeprecations": "6.0",
-    "baseUrl": ".",
+    "ignoreDeprecations": "5.0",
     "rootDir": ".",
     "noImplicitAny": false,
     "paths": {

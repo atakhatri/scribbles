@@ -12,13 +12,30 @@ import {
 import { useToast } from "../../context/ToastContext";
 import { auth, db, firestore } from "../../firebaseConfig";
 
+// Helper function to get user-friendly error messages
+const getErrorMessage = (errorCode: string): string => {
+  const errorMap: { [key: string]: string } = {
+    "auth/email-already-in-use": "Email already registered",
+    "auth/invalid-email": "Invalid email address",
+    "auth/weak-password": "Password should be at least 6 characters",
+    "auth/user-disabled": "Account is disabled",
+    "auth/operation-not-allowed": "Operation not allowed",
+    "auth/too-many-requests": "Too many attempts. Try again later",
+    "permission-denied":
+      "Account created, but profile write was blocked by Firestore rules.",
+    unavailable: "Firebase service unavailable. Try again in a moment.",
+  };
+  return errorMap[errorCode] || "Registration failed. Please try again";
+};
+
 export default function Register() {
   const router = useRouter();
-  const { showToast } = useToast();
+  const { showToast, playSound } = useToast();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [username, setUsername] = useState("");
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   const handleRegister = async () => {
     if (!email || !password || !username) {
@@ -49,7 +66,13 @@ export default function Register() {
       // 4. Go to Lobby
       router.replace("/");
     } catch (error: any) {
-      showToast({ message: error.message, type: "error" });
+      const errorCode = error?.code || "unknown-error";
+      const friendlyMessage = getErrorMessage(errorCode);
+      showToast({
+        message: `${friendlyMessage} (${errorCode})`,
+        type: "error",
+      });
+      console.error("Registration error:", error);
     } finally {
       setLoading(false);
     }
@@ -67,30 +90,47 @@ export default function Register() {
         <TextInput
           style={styles.input}
           placeholder="Username (e.g., DrawingMaster)"
-          placeholderTextColor={"#333"}
+          placeholderTextColor={"#999"}
           value={username}
           onChangeText={setUsername}
+          editable={!loading}
         />
         <TextInput
           style={styles.input}
           placeholder="Email"
-          placeholderTextColor={"#333"}
+          placeholderTextColor={"#999"}
           value={email}
           onChangeText={setEmail}
           autoCapitalize="none"
+          editable={!loading}
         />
-        <TextInput
-          style={styles.input}
-          placeholder="Password"
-          placeholderTextColor={"#333"}
-          value={password}
-          onChangeText={setPassword}
-          secureTextEntry
-        />
+
+        <View style={styles.passwordContainer}>
+          <TextInput
+            style={styles.passwordInput}
+            placeholder="Password"
+            placeholderTextColor={"#999"}
+            value={password}
+            onChangeText={setPassword}
+            secureTextEntry={!showPassword}
+            editable={!loading}
+          />
+          <TouchableOpacity
+            style={styles.eyeButton}
+            onPress={() => {
+              playSound(require("../../assets/sounds/blink.mp3"));
+              setShowPassword(!showPassword);
+            }}
+          >
+            <Text style={styles.eyeIcon}>{showPassword ? "👁" : "👁‍🗨"}</Text>
+          </TouchableOpacity>
+        </View>
 
         <TouchableOpacity
           style={styles.button}
-          onPress={handleRegister}
+          onPress={() => {
+            handleRegister();
+          }}
           disabled={loading}
         >
           {loading ? (
@@ -100,12 +140,19 @@ export default function Register() {
           )}
         </TouchableOpacity>
 
-        <TouchableOpacity onPress={() => router.push("/auth/login")}>
+        <TouchableOpacity
+          onPress={() => {
+            playSound(require("../../assets/sounds/click.mp3"));
+            router.push("/auth/login");
+          }}
+        >
           <Text style={styles.linkText}>
             Already have an account?
             <Text
               style={{ color: "#ffeeb0", fontWeight: "bold" }}
-              onPress={() => router.replace("/auth/login")}
+              onPress={() => {
+                router.replace("/auth/login");
+              }}
             >
               {" "}
               Sign In
@@ -141,6 +188,35 @@ const styles = StyleSheet.create({
     padding: 15,
     borderRadius: 10,
     marginBottom: 15,
+    color: "#000",
+    fontSize: 16,
+  },
+  passwordContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 15,
+    borderRadius: 10,
+    overflow: "hidden",
+  },
+  passwordInput: {
+    flex: 1,
+    backgroundColor: "white",
+    borderColor: "#333",
+    borderWidth: 2,
+    padding: 15,
+    borderRadius: 10,
+    color: "#000",
+    fontSize: 16,
+  },
+  eyeButton: {
+    position: "absolute",
+    right: 12,
+    padding: 10,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  eyeIcon: {
+    fontSize: 20,
   },
   button: {
     backgroundColor: "#333",

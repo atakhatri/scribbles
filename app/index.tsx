@@ -1,4 +1,8 @@
 import GRADIENTS from "@/data/gradients";
+import {
+  fetchMultipleUsers,
+  getUserCollection,
+} from "@/utils/userCollectionHelper";
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { FirebaseAuthTypes } from "@react-native-firebase/auth";
@@ -395,28 +399,25 @@ export default function Index() {
       setUser(currentUser);
 
       if (currentUser) {
-        // Safety net: when app is reopened on home after force-close,
-        // ensure this user is removed from any lingering active games.
-        await cleanupUserFromOpenGames(currentUser.uid);
-
-        // Check if user is in regular users or guestUsers collection
-        let docRef = db.collection("users").doc(currentUser.uid);
-        let docSnap = await docRef.get();
-
-        if (!docSnap.exists) {
-          // Check guestUsers collection
-          docRef = db.collection("guestUsers").doc(currentUser.uid);
-          docSnap = await docRef.get();
-        }
-
         try {
-          if (docSnap.exists) {
-            setUsername(docSnap.data().username);
+          // Safety net: when app is reopened on home after force-close,
+          // ensure this user is removed from any lingering active games.
+          await cleanupUserFromOpenGames(currentUser.uid);
+
+          // Use robust getUserCollection utility
+          const userCollection = await getUserCollection(currentUser.uid);
+          const docRef = db.collection(userCollection).doc(currentUser.uid);
+          const docSnap = await docRef.get();
+
+          if (docSnap.exists && docSnap.data()) {
+            setUsername(
+              docSnap.data()?.username || currentUser.displayName || "Player",
+            );
           } else {
             setUsername(currentUser.displayName || "Player");
           }
-        } catch (e) {
-          console.error("Error fetching profile", e);
+        } catch (error) {
+          console.error("Error fetching profile:", error);
           setUsername(currentUser.displayName || "Player");
         }
       }
@@ -443,44 +444,55 @@ export default function Index() {
   useEffect(() => {
     if (!user) return;
 
-    // Check both users and guestUsers collections
-    const checkCollection = async () => {
-      let userDocRef = db.collection("users").doc(user.uid);
-      let userDoc = await userDocRef.get();
+    // Use robust getUserCollection and set up listener
+    const setupListener = async () => {
+      try {
+        const userCollection = await getUserCollection(user.uid);
+        const userDocRef = db.collection(userCollection).doc(user.uid);
 
-      if (!userDoc.exists) {
-        userDocRef = db.collection("guestUsers").doc(user.uid);
+        const unsub = userDocRef.onSnapshot(
+          (docSnap) => {
+            if (docSnap.exists && docSnap.data()) {
+              const data = docSnap.data();
+              const invites = data?.gameInvites || [];
+              if (invites.length > 0 && pathname === "/") {
+                // Show the latest invite
+                setGameInvite(invites[invites.length - 1]);
+              } else {
+                setGameInvite(null);
+              }
+
+              // Friends Preview
+              const fIds = data?.friends || [];
+              setFriendCount(fIds.length);
+              fetchTopFriends(fIds);
+
+              if (data.avatarGradientIndex !== undefined) {
+                setAvatarGradientIndex(data.avatarGradientIndex);
+              }
+            }
+          },
+          (error) => {
+            console.error("User document listener error:", error);
+          },
+        );
+
+        return unsub;
+      } catch (error) {
+        console.error("Error setting up user document listener:", error);
+        // Return a no-op unsubscribe function
+        return () => {};
       }
-
-      const unsub = userDocRef.onSnapshot((docSnap) => {
-        if (docSnap.exists) {
-          const data = docSnap.data();
-          const invites = data.gameInvites || [];
-          if (invites.length > 0 && pathname === "/") {
-            // Show the latest invite
-            setGameInvite(invites[invites.length - 1]);
-          } else {
-            setGameInvite(null);
-          }
-
-          // Friends Preview
-          const fIds = data.friends || [];
-          setFriendCount(fIds.length);
-          fetchTopFriends(fIds);
-
-          if (data.avatarGradientIndex !== undefined) {
-            setAvatarGradientIndex(data.avatarGradientIndex);
-          }
-        }
-      });
-
-      return unsub;
     };
 
     let unsubscribe: (() => void) | undefined;
-    checkCollection().then((unsub) => {
-      unsubscribe = unsub;
-    });
+    setupListener()
+      .then((unsub) => {
+        unsubscribe = unsub;
+      })
+      .catch((error) => {
+        console.error("Error in setupListener:", error);
+      });
 
     return () => {
       if (unsubscribe) unsubscribe();
@@ -517,26 +529,14 @@ export default function Index() {
             if (pIds.length === 0) {
               setActiveGamePlayers([]);
             } else {
-              // Fetch from both users and guestUsers collections
-              const pData: any[] = [];
-
-              for (const id of pIds.slice(0, 10)) {
-                try {
-                  let doc = await db.collection("users").doc(id).get();
-                  if (doc.exists) {
-                    pData.push({ id: doc.id, ...doc.data() });
-                  } else {
-                    doc = await db.collection("guestUsers").doc(id).get();
-                    if (doc.exists) {
-                      pData.push({ id: doc.id, ...doc.data() });
-                    }
-                  }
-                } catch (e) {
-                  // Continue to next ID
-                }
+              // Use improved fetchMultipleUsers utility
+              try {
+                const pData = await fetchMultipleUsers(pIds.slice(0, 10));
+                setActiveGamePlayers(pData);
+              } catch (error) {
+                console.error("Error fetching players:", error);
+                setActiveGamePlayers([]);
               }
-
-              setActiveGamePlayers(pData);
             }
           }
 
@@ -559,62 +559,40 @@ export default function Index() {
       setFriendsPreview([]);
       return;
     }
+
     const idsToFetch = allFriendIds.slice(0, 10).filter(Boolean); // Fetch up to 10 to sort
     if (idsToFetch.length === 0) {
       setFriendsPreview([]);
       return;
     }
+
     try {
-      // First, try to fetch from users collection - using doc ID array
-      const friendsData = [];
-
-      // Fetch from users collection
-      for (const id of idsToFetch) {
-        try {
-          const doc = await db.collection("users").doc(id).get();
-          if (doc.exists) {
-            friendsData.push({ id: doc.id, ...doc.data() });
-          }
-        } catch (e) {
-          // Continue to next ID
-        }
-      }
-
-      // Also check guestUsers collection for any missing IDs
-      const foundIds = friendsData.map((f) => f.id);
-      const missingIds = idsToFetch.filter((id) => !foundIds.includes(id));
-
-      for (const id of missingIds) {
-        try {
-          const doc = await db.collection("guestUsers").doc(id).get();
-          if (doc.exists) {
-            friendsData.push({ id: doc.id, ...doc.data() });
-          }
-        } catch (e) {
-          // Continue to next ID
-        }
-      }
+      // Use improved fetchMultipleUsers utility
+      const friendsData = await fetchMultipleUsers(idsToFetch);
 
       // Sort by Last Seen Descending
-      friendsData.sort(
-        (a: any, b: any) => (b.lastSeen || 0) - (a.lastSeen || 0),
-      );
+      friendsData.sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
       setFriendsPreview(friendsData.slice(0, 5));
-    } catch (e) {
-      console.error("Error fetching friends preview", e);
+    } catch (error) {
+      console.error("Error fetching friends preview:", error);
+      setFriendsPreview([]);
     }
   };
 
   const handleAcceptInvite = async () => {
     playSound(require("../assets/sounds/accept.mp3"));
     if (!gameInvite || !user) return;
-    try {
-      // Check which collection the user is in
-      let userRef = db.collection("users").doc(user.uid);
-      let userDoc = await userRef.get();
 
+    try {
+      const userCollection = await getUserCollection(user.uid);
+      const userRef = db.collection(userCollection).doc(user.uid);
+
+      // Verify document exists
+      const userDoc = await userRef.get();
       if (!userDoc.exists) {
-        userRef = db.collection("guestUsers").doc(user.uid);
+        showToast({ message: "User profile not found", type: "error" });
+        setGameInvite(null);
+        return;
       }
 
       await userRef.update({
@@ -630,31 +608,38 @@ export default function Index() {
 
       setGameInvite(null);
       setActiveGameId(gameInvite.roomId);
-    } catch (e) {
-      console.error(e);
+    } catch (error) {
+      console.error("Error accepting invite:", error);
+      showToast({ message: "Failed to join game", type: "error" });
     }
   };
 
-  const handleDeclineInvite = async () => {
+  const handleDeclineInvite = useCallback(async () => {
     playSound(require("../assets/sounds/decline.mp3"));
     if (!gameInvite || !user) return;
-    try {
-      // Check which collection the user is in
-      let userRef = db.collection("users").doc(user.uid);
-      let userDoc = await userRef.get();
 
+    try {
+      const userCollection = await getUserCollection(user.uid);
+      const userRef = db.collection(userCollection).doc(user.uid);
+
+      // Verify document exists
+      const userDoc = await userRef.get();
       if (!userDoc.exists) {
-        userRef = db.collection("guestUsers").doc(user.uid);
+        console.warn("User document not found when declining invite");
+        setGameInvite(null);
+        return;
       }
 
       await userRef.update({
         gameInvites: firestore.FieldValue.arrayRemove(gameInvite),
       });
       setGameInvite(null);
-    } catch (e) {
-      console.error("Error declining invite", e);
+    } catch (error) {
+      console.error("Error declining invite:", error);
+      // Still remove the invite from UI even if update fails
+      setGameInvite(null);
     }
-  };
+  }, [gameInvite, user, playSound]);
 
   // Auto-revoke invite after 15 seconds
   useEffect(() => {
@@ -667,10 +652,15 @@ export default function Index() {
       }, timeRemaining);
       return () => clearTimeout(timer);
     }
-  }, [gameInvite]);
+  }, [gameInvite, handleDeclineInvite]);
 
   const handleQuickInvite = async (friendId: string) => {
     try {
+      if (!user) {
+        showToast({ message: "Not logged in", type: "error" });
+        return;
+      }
+
       let gameId = activeGameId;
       if (!gameId) {
         gameId = Math.random().toString(36).substring(2, 6).toUpperCase();
@@ -680,13 +670,13 @@ export default function Index() {
           .set({
             status: "waiting",
             lobbyEnteredAt: null,
-            currentDrawer: user!.uid,
+            currentDrawer: user.uid,
             currentWord: "",
             round: 1,
             maxRounds: selectedRounds,
-            scores: { [user!.uid]: 0 },
-            players: [user!.uid],
-            hostId: user!.uid,
+            scores: { [user.uid]: 0 },
+            players: [user.uid],
+            hostId: user.uid,
             guesses: [],
             createdAt: Date.now(),
             lastUpdated: firestore.FieldValue.serverTimestamp(),
@@ -694,29 +684,29 @@ export default function Index() {
         setActiveGameId(gameId);
       }
 
-      // Check which collection the friend is in
-      let friendRef = db.collection("users").doc(friendId);
-      let friendDoc = await friendRef.get();
+      // Use robust getUserCollection
+      const friendCollection = await getUserCollection(friendId);
+      const friendRef = db.collection(friendCollection).doc(friendId);
 
+      // Verify friend document exists
+      const friendDoc = await friendRef.get();
       if (!friendDoc.exists) {
-        friendRef = db.collection("guestUsers").doc(friendId);
-        friendDoc = await friendRef.get();
+        showToast({ message: "Friend not found", type: "error" });
+        return;
       }
 
-      if (friendDoc.exists) {
-        await friendRef.update({
-          gameInvites: firestore.FieldValue.arrayUnion({
-            roomId: gameId,
-            inviterName: username,
-            timestamp: Date.now(),
-          }),
-        });
-        showToast({ message: "Friend invited to join!", type: "success" });
-      } else {
-        showToast({ message: "Friend not found", type: "error" });
-      }
-    } catch (e) {
-      console.error("Quick invite failed", e);
+      await friendRef.update({
+        gameInvites: firestore.FieldValue.arrayUnion({
+          roomId: gameId,
+          inviterName: username,
+          inviterId: user.uid,
+          timestamp: Date.now(),
+        }),
+      });
+
+      showToast({ message: "Friend invited to join!", type: "success" });
+    } catch (error) {
+      console.error("Quick invite failed:", error);
       showToast({ message: "Failed to send invite", type: "error" });
     }
   };
@@ -740,7 +730,7 @@ export default function Index() {
           text: "Delete Room",
           style: "destructive",
           onPress: async () => {
-            playSound(require("../assets/sounds/lock.mp3"));
+            playSound(require("../assets/sounds/decline.mp3"));
             try {
               await db.collection("games").doc(activeGameId).delete();
               setActiveGameId(null);
@@ -772,7 +762,7 @@ export default function Index() {
           text: "Leave",
           style: "destructive",
           onPress: async () => {
-            playSound(require("../assets/sounds/lock.mp3"));
+            playSound(require("../assets/sounds/decline.mp3"));
             try {
               await db
                 .collection("games")
@@ -1045,12 +1035,47 @@ export default function Index() {
   const handleGuestLogin = async () => {
     setIsGuestLoading(true);
     try {
-      await signInAsGuest();
+      console.log("Starting guest login...");
+
+      // Add timeout to prevent hanging
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Guest login timeout")), 15000),
+      );
+
+      const loginPromise = signInAsGuest();
+
+      await Promise.race([loginPromise, timeoutPromise]);
+
+      console.log("Guest login successful");
+
+      // Give Firebase extra time to settle and replicate the document
+      console.log("Waiting for Firebase to settle...");
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+
       playSound(require("../assets/sounds/intro.mp3"));
-      router.replace("/");
+
+      // Navigation will happen automatically via auth state change
+      console.log("Guest login complete, auth state will update");
     } catch (error: any) {
-      showToast({ message: "Failed to sign in as guest", type: "error" });
       console.error("Guest login error:", error);
+      console.error("Error details:", JSON.stringify(error));
+
+      let errorMessage = "Failed to sign in as guest";
+
+      if (error?.message?.includes("not available")) {
+        errorMessage = "Anonymous login not enabled. Please contact support.";
+      } else if (error?.message?.includes("timeout")) {
+        errorMessage = "Login timed out. Check your internet connection.";
+      } else if (error?.code) {
+        errorMessage = `Login failed: ${error.code}`;
+      } else if (error?.message) {
+        errorMessage = error.message;
+      }
+
+      showToast({
+        message: errorMessage,
+        type: "error",
+      });
     } finally {
       setIsGuestLoading(false);
     }
@@ -1061,14 +1086,9 @@ export default function Index() {
 
     setIsRefreshingFriends(true);
     try {
-      // Check both users and guestUsers collections
-      let userDocRef = db.collection("users").doc(user.uid);
-      let userSnap = await userDocRef.get();
-
-      if (!userSnap.exists) {
-        userDocRef = db.collection("guestUsers").doc(user.uid);
-        userSnap = await userDocRef.get();
-      }
+      const userCollection = await getUserCollection(user.uid);
+      const userDocRef = db.collection(userCollection).doc(user.uid);
+      const userSnap = await userDocRef.get();
 
       if (!userSnap.exists) {
         setFriendCount(0);
@@ -1078,7 +1098,7 @@ export default function Index() {
       }
 
       const data = userSnap.data();
-      const friendIds = data.friends || [];
+      const friendIds = data?.friends || [];
       setFriendCount(friendIds.length);
       await fetchTopFriends(friendIds);
       showToast({ message: "Friend statuses refreshed.", type: "success" });
@@ -1124,7 +1144,9 @@ export default function Index() {
                   />
                   <TouchableOpacity
                     style={(styles.buttonPrimary, styles.buttonJoin)}
-                    onPress={joinRoom}
+                    onPress={() => {
+                      joinRoom();
+                    }}
                   >
                     <Text style={styles.buttonText}>Join Room</Text>
                   </TouchableOpacity>
@@ -1221,12 +1243,13 @@ export default function Index() {
                   ))}
                   <TouchableOpacity
                     style={styles.inviteMoreBtn}
-                    onPress={() =>
+                    onPress={() => {
+                      playSound(require("../assets/sounds/click.mp3"));
                       router.push({
                         pathname: "/pages/friends",
                         params: { inviteToRoomId: activeGameId },
-                      })
-                    }
+                      });
+                    }}
                   >
                     <Ionicons name="add" size={30} color="#666" />
                   </TouchableOpacity>
@@ -1345,7 +1368,10 @@ export default function Index() {
                     <View style={styles.friendsHeaderSpacer} />
                     <Text style={styles.friendsTitle}>Friends</Text>
                     <TouchableOpacity
-                      onPress={handleRefreshFriendsStatus}
+                      onPress={() => {
+                        playSound(require("../assets/sounds/lock.mp3"));
+                        handleRefreshFriendsStatus();
+                      }}
                       style={styles.refreshFriendsBtn}
                       disabled={isRefreshingFriends}
                     >
@@ -1402,7 +1428,10 @@ export default function Index() {
                       </View>
                       <TouchableOpacity
                         style={styles.quickInviteBtn}
-                        onPress={() => handleQuickInvite(friend.id)}
+                        onPress={() => {
+                          playSound(require("../assets/sounds/lock.mp3"));
+                          handleQuickInvite(friend.id);
+                        }}
                       >
                         <Text style={styles.quickInviteText}>Invite</Text>
                       </TouchableOpacity>
@@ -1410,7 +1439,10 @@ export default function Index() {
                   ))}
                   <TouchableOpacity
                     style={styles.seeAllBtn}
-                    onPress={() => router.push("/pages/friends")}
+                    onPress={() => {
+                      playSound(require("../assets/sounds/friendsMenu.mp3"));
+                      router.push("/pages/friends");
+                    }}
                   >
                     <Text style={styles.seeAllText}>
                       {friendCount === 0 ? "Add Friends" : "View All Friends"}
@@ -1537,7 +1569,10 @@ export default function Index() {
           <Text style={styles.title}>Scribbles</Text>
           <TouchableOpacity
             style={styles.buttonPrimary}
-            onPress={() => router.push("/auth/login")}
+            onPress={() => {
+              playSound(require("../assets/sounds/click.mp3"));
+              router.push("/auth/login");
+            }}
           >
             <Text style={styles.buttonText}>Log In</Text>
           </TouchableOpacity>
@@ -1551,14 +1586,20 @@ export default function Index() {
           >
             <TouchableOpacity
               style={[styles.buttonSecondary, { marginTop: 15 }]}
-              onPress={() => router.push("/auth/register")}
+              onPress={() => {
+                playSound(require("../assets/sounds/click.mp3"));
+                router.push("/auth/register");
+              }}
             >
               <Text style={styles.buttonTextSecondary}>Create Account</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
               style={[styles.buttonGuest, { marginTop: 15 }]}
-              onPress={handleGuestLogin}
+              onPress={() => {
+                playSound(require("../assets/sounds/click.mp3"));
+                handleGuestLogin();
+              }}
               disabled={isGuestLoading}
             >
               {isGuestLoading ? (

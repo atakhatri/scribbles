@@ -66,9 +66,15 @@ export default function RootLayout() {
       // Determine which collection the user belongs to
       try {
         const usersDocSnap = await db.collection("users").doc(user.uid).get();
-        const collectionName = usersDocSnap.exists ? "users" : "guestUsers";
-        userRef = db.collection(collectionName).doc(user.uid);
+        if (usersDocSnap.exists) {
+          userRef = db.collection("users").doc(user.uid);
+        } else {
+          // Wait a bit for guest document to be created
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          userRef = db.collection("guestUsers").doc(user.uid);
+        }
       } catch (e) {
+        console.error("Error determining user collection:", e);
         // Default to users collection
         userRef = db.collection("users").doc(user.uid);
       }
