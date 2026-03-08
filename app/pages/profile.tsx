@@ -8,18 +8,6 @@ import * as FileSystem from "expo-file-system";
 import * as IntentLauncher from "expo-intent-launcher";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
-import { deleteUser, getAuth, signOut, updateProfile } from "firebase/auth";
-import {
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  getFirestore,
-  onSnapshot,
-  query,
-  updateDoc,
-  where,
-} from "firebase/firestore";
 import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -38,6 +26,7 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
+import { auth, db } from "../../firebaseConfig";
 
 const UPDATE_JSON_URL =
   "https://gist.githubusercontent.com/atakhatri/14928794d017d4b66a845d2afb58f487/raw/version.json";
@@ -53,8 +42,6 @@ interface MatchSummary {
 
 export default function ProfileScreen() {
   const router = useRouter();
-  const auth = getAuth();
-  const db = getFirestore();
   const user = auth.currentUser;
   const { showToast, showAlert, playSound } = useToast();
   const { width } = useWindowDimensions();
@@ -101,15 +88,15 @@ export default function ProfileScreen() {
     // Check if user is a guest by checking both collections
     const checkUserCollection = async () => {
       // First try users collection
-      let userDocRef = doc(db, "users", user.uid);
-      let docSnap = await getDoc(userDocRef);
+      let userDocRef = db.collection("users").doc(user.uid);
+      let docSnap = await userDocRef.get();
 
-      if (!docSnap.exists()) {
+      if (!docSnap.exists) {
         // Try guestUsers collection
-        userDocRef = doc(db, "guestUsers", user.uid);
-        docSnap = await getDoc(userDocRef);
+        userDocRef = db.collection("guestUsers").doc(user.uid);
+        docSnap = await userDocRef.get();
 
-        if (docSnap.exists()) {
+        if (docSnap.exists) {
           setIsGuest(true);
         }
       } else {
@@ -122,10 +109,9 @@ export default function ProfileScreen() {
     let unsubscribe: (() => void) | undefined;
 
     checkUserCollection().then((userDocRef) => {
-      unsubscribe = onSnapshot(
-        userDocRef,
+      unsubscribe = userDocRef.onSnapshot(
         async (docSnap) => {
-          if (docSnap.exists()) {
+          if (docSnap.exists) {
             const data = docSnap.data();
             setStats({
               wins: data.wins || 0,
@@ -192,7 +178,7 @@ export default function ProfileScreen() {
     setSelectedGradientIndex(index);
     if (user) {
       const collection = isGuest ? "guestUsers" : "users";
-      await updateDoc(doc(db, collection, user.uid), {
+      await db.collection(collection).doc(user.uid).update({
         avatarGradientIndex: index,
       });
     }
@@ -207,24 +193,19 @@ export default function ProfileScreen() {
     setUpdating(true);
     try {
       // Check uniqueness across both users and guestUsers collections
-      const usersRef = collection(db, "users");
-      const guestUsersRef = collection(db, "guestUsers");
+      const usersRef = db.collection("users");
+      const guestUsersRef = db.collection("guestUsers");
       const lowerName = newName.toLowerCase();
 
       // Check against usernameLower (case-insensitive) and username (exact legacy) in both collections
-      const qUsersLower = query(
-        usersRef,
-        where("usernameLower", "==", lowerName),
+      const qUsersLower = usersRef.where("usernameLower", "==", lowerName);
+      const qUsersExact = usersRef.where("username", "==", newName);
+      const qGuestUsersLower = guestUsersRef.where(
+        "usernameLower",
+        "==",
+        lowerName,
       );
-      const qUsersExact = query(usersRef, where("username", "==", newName));
-      const qGuestUsersLower = query(
-        guestUsersRef,
-        where("usernameLower", "==", lowerName),
-      );
-      const qGuestUsersExact = query(
-        guestUsersRef,
-        where("username", "==", newName),
-      );
+      const qGuestUsersExact = guestUsersRef.where("username", "==", newName);
 
       const [
         snapUsersLower,
@@ -232,10 +213,10 @@ export default function ProfileScreen() {
         snapGuestUsersLower,
         snapGuestUsersExact,
       ] = await Promise.all([
-        getDocs(qUsersLower),
-        getDocs(qUsersExact),
-        getDocs(qGuestUsersLower),
-        getDocs(qGuestUsersExact),
+        qUsersLower.get(),
+        qUsersExact.get(),
+        qGuestUsersLower.get(),
+        qGuestUsersExact.get(),
       ]);
 
       const isTaken =
@@ -253,10 +234,10 @@ export default function ProfileScreen() {
         return;
       }
 
-      await updateProfile(user, { displayName: newName });
+      await user.updateProfile({ displayName: newName });
 
       const collectionName = isGuest ? "guestUsers" : "users";
-      await updateDoc(doc(db, collectionName, user.uid), {
+      await db.collection(collectionName).doc(user.uid).update({
         displayName: newName,
         username: newName,
         usernameLower: lowerName,
@@ -280,11 +261,11 @@ export default function ProfileScreen() {
         // For guest users: cleanup their account completely
         await cleanupGuestAccount(user.uid);
         // Delete the auth account
-        await deleteUser(user);
+        await user.delete();
         router.replace("/");
       } else {
         // For regular users: just sign out
-        await signOut(auth);
+        await auth.signOut();
         router.replace("/auth/login");
       }
     } catch (error) {

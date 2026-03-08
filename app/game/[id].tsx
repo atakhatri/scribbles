@@ -1,32 +1,10 @@
 import Preloader from "@/components/preloader";
 import GRADIENTS from "@/data/gradients";
 import { Ionicons } from "@expo/vector-icons";
+import database from "@react-native-firebase/database";
 import * as Clipboard from "expo-clipboard";
 import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import {
-  get,
-  onDisconnect,
-  onValue,
-  ref as rtdbRef,
-  serverTimestamp as rtdbServerTimestamp,
-  set as rtdbSet,
-} from "firebase/database";
-import {
-  addDoc,
-  arrayUnion,
-  collection,
-  deleteDoc,
-  deleteField,
-  doc,
-  getDoc,
-  increment,
-  onSnapshot,
-  runTransaction,
-  serverTimestamp,
-  setDoc,
-  updateDoc,
-} from "firebase/firestore";
 import React, { useEffect, useRef, useState } from "react";
 import {
   Alert,
@@ -48,7 +26,16 @@ import Podium from "../../components/Podium";
 import WaitingLobby from "../../components/WaitingLobby";
 import { WORDS_POOL } from "../../components/words";
 import { useToast } from "../../context/ToastContext";
-import { auth, db, rtdb } from "../../firebaseConfig";
+import { auth, db, firestore, rtdb } from "../../firebaseConfig";
+
+// Realtime Database utilities
+const rtdbRef = (rtdbInstance: any, path: string) => rtdbInstance.ref(path);
+const onValue = (ref: any, callback: (snap: any) => void) =>
+  ref.on("value", callback);
+const onDisconnect = (ref: any) => ref.onDisconnect();
+const rtdbSet = (ref: any, value: any) => ref.set(value);
+const get = (ref: any) => ref.once("value");
+const rtdbServerTimestamp = () => database.ServerValue.TIMESTAMP;
 
 interface Stroke {
   path: string;
@@ -136,12 +123,12 @@ export default function GameRoom() {
   ): Promise<"users" | "guestUsers"> => {
     try {
       // Try fetching from users collection first
-      const usersDoc = await getDoc(doc(db, "users", userId));
+      const usersDoc = await db.collection("users").doc(userId).get();
       if (usersDoc.exists()) {
         return "users";
       }
       // If not in users, check guestUsers
-      const guestUsersDoc = await getDoc(doc(db, "guestUsers", userId));
+      const guestUsersDoc = await db.collection("guestUsers").doc(userId).get();
       return guestUsersDoc.exists() ? "guestUsers" : "guestUsers"; // Default to guestUsers for new guest users
     } catch (e) {
       console.error("Error determining user collection:", e);
@@ -154,13 +141,15 @@ export default function GameRoom() {
     const syncTime = async () => {
       try {
         // Create a temporary doc in 'games' (since we have write access) to get server time
-        const syncRef = doc(db, "games", `SYNC_${userId}_${Math.random()}`);
-        await setDoc(syncRef, { t: serverTimestamp() });
-        const snap = await getDoc(syncRef);
+        const syncRef = db
+          .collection("games")
+          .doc(`SYNC_${userId}_${Math.random()}`);
+        await syncRef.set({ t: firestore.FieldValue.serverTimestamp() });
+        const snap = await syncRef.get();
         if (snap.exists()) {
           const serverTime = snap.data().t.toMillis();
           timeOffsetRef.current = serverTime - Date.now();
-          await deleteDoc(syncRef);
+          await syncRef.delete();
         }
       } catch (e) {
         console.log("Time sync failed", e);
@@ -181,9 +170,9 @@ export default function GameRoom() {
 
   const removePlayerFromGame = async (targetUserId: string) => {
     if (!id) return;
-    const gameRef = doc(db, "games", id as string);
+    const gameRef = db.collection("games").doc(id as string);
 
-    await runTransaction(db, async (tx) => {
+    await db.runTransaction(async (tx) => {
       const docSnap = await tx.get(gameRef);
       if (!docSnap.exists()) return;
       const data = docSnap.data() as any;
@@ -201,7 +190,7 @@ export default function GameRoom() {
 
       const updates: any = {
         players: updatedPlayers,
-        [`presence.${targetUserId}`]: deleteField(),
+        [`presence.${targetUserId}`]: firestore.FieldValue.delete(),
       };
 
       if (data.hostId === targetUserId && updatedPlayers.length > 0) {
@@ -249,12 +238,16 @@ export default function GameRoom() {
 
     if (withMessage && didRemove && !roomDeleted) {
       try {
-        await addDoc(collection(db, "games", id as string, "messages"), {
-          isSystem: true,
-          systemType: "leave",
-          text: `${auth.currentUser?.displayName || "A player"} left the game`,
-          timestamp: serverTimestamp(),
-        });
+        await db
+          .collection("games")
+          .doc(id as string)
+          .collection("messages")
+          .add({
+            isSystem: true,
+            systemType: "leave",
+            text: `${auth.currentUser?.displayName || "A player"} left the game`,
+            timestamp: firestore.FieldValue.serverTimestamp(),
+          });
       } catch {
         // Ignore leave message failures.
       }
@@ -303,24 +296,27 @@ export default function GameRoom() {
   // Listen for game invites (Toast only)
   useEffect(() => {
     if (!userId) return;
-    const unsub = onSnapshot(doc(db, "users", userId), (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        const invites = data.gameInvites || [];
-        if (invites.length > 0) {
-          const latest = invites[invites.length - 1];
-          if (latest.timestamp > lastInviteTimestamp.current) {
-            lastInviteTimestamp.current = latest.timestamp;
-            if (Date.now() - latest.timestamp < 15000) {
-              showToast({
-                message: `${latest.inviterName} invited you to play!`,
-                type: "info",
-              });
+    const unsub = db
+      .collection("users")
+      .doc(userId)
+      .onSnapshot((docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          const invites = data.gameInvites || [];
+          if (invites.length > 0) {
+            const latest = invites[invites.length - 1];
+            if (latest.timestamp > lastInviteTimestamp.current) {
+              lastInviteTimestamp.current = latest.timestamp;
+              if (Date.now() - latest.timestamp < 15000) {
+                showToast({
+                  message: `${latest.inviterName} invited you to play!`,
+                  type: "info",
+                });
+              }
             }
           }
         }
-      }
-    });
+      });
     return () => unsub();
   }, [userId]);
 
@@ -352,10 +348,10 @@ export default function GameRoom() {
           const isWinner = myScore > 0 && myScore === maxScore;
 
           const userCollection = await getUserCollection(userId);
-          const userRef = doc(db, userCollection, userId);
+          const userRef = db.collection(userCollection).doc(userId);
 
           // Keep last 5 match summaries in user profile so history survives room deletion.
-          const userSnap = await getDoc(userRef);
+          const userSnap = await userRef.get();
           const userData = userSnap.data();
           const currentLastMatches = Array.isArray(userData?.lastMatches)
             ? userData.lastMatches
@@ -374,19 +370,20 @@ export default function GameRoom() {
           );
 
           const updatePayload = {
-            totalGames: increment(1),
-            totalScore: increment(myScore),
-            wins: isWinner ? increment(1) : increment(0),
+            totalGames: firestore.FieldValue.increment(1),
+            totalScore: firestore.FieldValue.increment(myScore),
+            wins: isWinner
+              ? firestore.FieldValue.increment(1)
+              : firestore.FieldValue.increment(0),
             lastMatches: newLastMatches,
           };
 
           // If document exists, update it; otherwise create it with merge
-          if (userSnap.exists()) {
-            await updateDoc(userRef, updatePayload);
+          if (userSnap.exists) {
+            await userRef.update(updatePayload);
           } else {
             // Create document with initial stats if it doesn't exist
-            await setDoc(
-              userRef,
+            await userRef.set(
               {
                 totalGames: 1,
                 totalScore: myScore,
@@ -425,7 +422,10 @@ export default function GameRoom() {
     // Give clients a short window to persist stats/match history before deleting room.
     const timeout = setTimeout(async () => {
       try {
-        await deleteDoc(doc(db, "games", id as string));
+        await db
+          .collection("games")
+          .doc(id as string)
+          .delete();
       } catch {
         // Ignore if already deleted by another action.
       }
@@ -449,13 +449,17 @@ export default function GameRoom() {
       playSound(require("../../assets/sounds/gameStart.mp3"));
 
       if (userId === gameData.hostId) {
-        addDoc(collection(db, "games", id as string, "messages"), {
-          text: `Round ${currentRound} started!`,
-          isSystem: true,
-          userName: "Game",
-          userId: "system",
-          timestamp: serverTimestamp(),
-        }).catch((err) => console.error("Failed to send round start msg", err));
+        db.collection("games")
+          .doc(id as string)
+          .collection("messages")
+          .add({
+            text: `Round ${currentRound} started!`,
+            isSystem: true,
+            userName: "Game",
+            userId: "system",
+            timestamp: firestore.FieldValue.serverTimestamp(),
+          })
+          .catch((err) => console.error("Failed to send round start msg", err));
       }
 
       if (maxRounds > 1) {
@@ -511,13 +515,17 @@ export default function GameRoom() {
         const drawerName =
           playersList.find((p) => p.uid === currentDrawer)?.displayName ||
           "A player";
-        addDoc(collection(db, "games", id as string, "messages"), {
-          text: `${drawerName} is drawing!`,
-          isSystem: true,
-          userName: "Game",
-          userId: "system",
-          timestamp: serverTimestamp(),
-        }).catch((err) => console.error("Failed to send drawer msg", err));
+        db.collection("games")
+          .doc(id as string)
+          .collection("messages")
+          .add({
+            text: `${drawerName} is drawing!`,
+            isSystem: true,
+            userName: "Game",
+            userId: "system",
+            timestamp: firestore.FieldValue.serverTimestamp(),
+          })
+          .catch((err) => console.error("Failed to send drawer msg", err));
       }
       setLastDrawer(currentDrawer);
     }
@@ -547,8 +555,8 @@ export default function GameRoom() {
   useEffect(() => {
     if (!id) return;
 
-    const gameRef = doc(db, "games", id as string);
-    const unsubscribe = onSnapshot(gameRef, (docSnap) => {
+    const gameRef = db.collection("games").doc(id as string);
+    const unsubscribe = gameRef.onSnapshot((docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data() as GameData;
         setGameData(data);
@@ -578,7 +586,7 @@ export default function GameRoom() {
   // Presence heartbeat and stale-player cleanup (handles abrupt close/network loss)
   useEffect(() => {
     if (!id || !userId) return;
-    const gameRef = doc(db, "games", id as string);
+    const gameRef = db.collection("games").doc(id as string);
 
     // Add jitter to prevent all clients from updating simultaneously
     const jitter = Math.random() * 1000;
@@ -588,9 +596,9 @@ export default function GameRoom() {
     const sendHeartbeat = async () => {
       if (!isHeartbeatActive || didLeaveRoomRef.current) return;
       try {
-        await updateDoc(gameRef, {
+        await gameRef.update({
           [`presence.${userId}`]: getServerTime(),
-          lastUpdated: serverTimestamp(),
+          lastUpdated: firestore.FieldValue.serverTimestamp(),
         });
       } catch (err) {
         // Ignore transient heartbeat failures
@@ -694,7 +702,7 @@ export default function GameRoom() {
     if (!id || !userId) return;
 
     const gamePresenceRef = rtdbRef(rtdb, `presence/games/${id}`);
-    const gameRef = doc(db, "games", id as string);
+    const gameRef = db.collection("games").doc(id as string);
 
     const unsubscribe = onValue(gamePresenceRef, async () => {
       const now = Date.now();
@@ -705,7 +713,7 @@ export default function GameRoom() {
       try {
         const [presenceSnap, gameSnap] = await Promise.all([
           get(gamePresenceRef),
-          getDoc(gameRef),
+          gameRef.get(),
         ]);
 
         const presence = presenceSnap.val() || {};
@@ -988,8 +996,8 @@ export default function GameRoom() {
     (async () => {
       let didProcessTransition = false;
       try {
-        const gameRef = doc(db, "games", id as string);
-        await runTransaction(db, async (tx) => {
+        const gameRef = db.collection("games").doc(id as string);
+        await db.runTransaction(async (tx) => {
           const snap = await tx.get(gameRef);
           if (!snap.exists()) return;
           const data = snap.data() as any;
@@ -1029,13 +1037,17 @@ export default function GameRoom() {
           // 2. Drawing Phase Timeout (Turn End)
           // Word was selected, but time ran out. Move to next player.
 
-          const msgRef = doc(collection(db, "games", id as string, "messages"));
+          const msgRef = db
+            .collection("games")
+            .doc(id as string)
+            .collection("messages")
+            .doc();
           tx.set(msgRef, {
             text: "Time's up!",
             isSystem: true,
             userName: "Game",
             userId: "system",
-            timestamp: serverTimestamp(),
+            timestamp: firestore.FieldValue.serverTimestamp(),
           });
 
           const playersRaw = Array.isArray(data.players) ? data.players : [];
@@ -1091,7 +1103,7 @@ export default function GameRoom() {
             currentDrawer: nextDrawer,
             status: newStatus,
             roundEndTimestamp: newRoundEnd,
-            lastUpdated: serverTimestamp(),
+            lastUpdated: firestore.FieldValue.serverTimestamp(),
           };
 
           tx.update(gameRef, updateObj);
@@ -1130,19 +1142,19 @@ export default function GameRoom() {
   // Ensure current user is added to the room players list once (on mount), and removed on unmount.
   useEffect(() => {
     if (!id || !userId) return;
-    const gameRef = doc(db, "games", id as string);
+    const gameRef = db.collection("games").doc(id as string);
 
     (async () => {
       try {
-        const snap = await getDoc(gameRef);
+        const snap = await gameRef.get();
         const players = snap.exists() ? (snap.data() as any).players || [] : [];
         const already = players.some((p: any) =>
           typeof p === "string" ? p === userId : p?.uid === userId,
         );
         if (!already) {
           try {
-            await updateDoc(gameRef, {
-              players: arrayUnion(userId),
+            await gameRef.update({
+              players: firestore.FieldValue.arrayUnion(userId),
               [`presence.${userId}`]: getServerTime(),
             });
           } catch (e) {
@@ -1151,22 +1163,26 @@ export default function GameRoom() {
           try {
             const scoreObj: any = {};
             scoreObj[`scores.${userId}`] = 0;
-            await updateDoc(gameRef, scoreObj);
+            await gameRef.update(scoreObj);
           } catch (e) {}
           try {
-            await addDoc(collection(db, "games", id as string, "messages"), {
-              isSystem: true,
-              systemType: "join",
-              text: `${
-                auth.currentUser?.displayName || "A player"
-              } joined the game`,
-              timestamp: serverTimestamp(),
-            });
+            await db
+              .collection("games")
+              .doc(id as string)
+              .collection("messages")
+              .add({
+                isSystem: true,
+                systemType: "join",
+                text: `${
+                  auth.currentUser?.displayName || "A player"
+                } joined the game`,
+                timestamp: firestore.FieldValue.serverTimestamp(),
+              });
           } catch (e) {}
         } else {
           // Refresh presence on re-open/reconnect.
           try {
-            await updateDoc(gameRef, {
+            await gameRef.update({
               [`presence.${userId}`]: getServerTime(),
             });
           } catch {}
@@ -1190,12 +1206,14 @@ export default function GameRoom() {
           if (typeof p === "string") {
             try {
               // Try users collection first, then guestUsers
-              let userDoc = await getDoc(doc(db, "users", p));
-              let data = userDoc.exists() ? userDoc.data() : null;
+              let userDocRef = db.collection("users").doc(p);
+              let userDoc = await userDocRef.get();
+              let data = userDoc.exists ? userDoc.data() : null;
 
               if (!data) {
-                userDoc = await getDoc(doc(db, "guestUsers", p));
-                data = userDoc.exists() ? userDoc.data() : null;
+                userDocRef = db.collection("guestUsers").doc(p);
+                userDoc = await userDocRef.get();
+                data = userDoc.exists ? userDoc.data() : null;
               }
 
               return {
@@ -1254,12 +1272,12 @@ export default function GameRoom() {
 
     try {
       isUpdating.current = true;
-      const gameRef = doc(db, "games", id as string);
+      const gameRef = db.collection("games").doc(id as string);
 
       // We append ONLY the new stroke to the array.
-      await updateDoc(gameRef, {
-        strokes: arrayUnion(newStroke),
-        lastUpdated: serverTimestamp(),
+      await gameRef.update({
+        strokes: firestore.FieldValue.arrayUnion(newStroke),
+        lastUpdated: firestore.FieldValue.serverTimestamp(),
       });
     } catch (error) {
       console.error("Error saving stroke:", error);
@@ -1271,8 +1289,8 @@ export default function GameRoom() {
   const handleClearCanvas = async () => {
     if (!gameData || gameData.currentDrawer !== userId) return;
     try {
-      const gameRef = doc(db, "games", id as string);
-      await updateDoc(gameRef, {
+      const gameRef = db.collection("games").doc(id as string);
+      await gameRef.update({
         strokes: [], // Reset strokes
       });
     } catch (error) {
@@ -1283,14 +1301,14 @@ export default function GameRoom() {
   const handleUndo = async () => {
     if (!gameData || gameData.currentDrawer !== userId) return;
     try {
-      const gameRef = doc(db, "games", id as string);
-      const snap = await getDoc(gameRef);
+      const gameRef = db.collection("games").doc(id as string);
+      const snap = await gameRef.get();
       if (!snap.exists()) return;
       const data = snap.data() as any;
       const strokes = Array.isArray(data.strokes) ? data.strokes.slice() : [];
       if (strokes.length === 0) return;
       strokes.pop();
-      await updateDoc(gameRef, { strokes });
+      await gameRef.update({ strokes });
     } catch (e) {
       console.error("Undo failed", e);
     }
@@ -1321,11 +1339,11 @@ export default function GameRoom() {
     }
 
     try {
-      const gameRef = doc(db, "games", id as string);
+      const gameRef = db.collection("games").doc(id as string);
       const firstDrawer = gameData.players[0]?.uid || gameData.players[0];
       const roundEnd = getServerTime() + 30000; // 30s for word selection
       timeoutProcessedRef.current = null;
-      await updateDoc(gameRef, {
+      await gameRef.update({
         status: "playing",
         round: 1,
         currentDrawer: firstDrawer,
@@ -1335,7 +1353,7 @@ export default function GameRoom() {
         roundEndTimestamp: roundEnd,
         word: "",
         currentWord: "",
-        lastUpdated: serverTimestamp(),
+        lastUpdated: firestore.FieldValue.serverTimestamp(),
       });
     } catch (error) {
       console.error("Error starting game", error);
@@ -1345,10 +1363,10 @@ export default function GameRoom() {
   const handleCorrectGuess = async (guesserId: string) => {
     playSound(require("../../assets/sounds/correct.mp3"));
     if (!id) return;
-    const gameRef = doc(db, "games", id as string);
+    const gameRef = db.collection("games").doc(id as string);
 
     try {
-      await runTransaction(db, async (tx) => {
+      await db.runTransaction(async (tx) => {
         const snap = await tx.get(gameRef);
         if (!snap.exists()) return;
         const data = snap.data() as any;
@@ -1441,7 +1459,7 @@ export default function GameRoom() {
           currentDrawer: nextDrawer,
           roundEndTimestamp: newRoundEnd,
           status: newStatus,
-          lastUpdated: serverTimestamp(),
+          lastUpdated: firestore.FieldValue.serverTimestamp(),
         });
       });
     } catch (e) {
@@ -1459,14 +1477,14 @@ export default function GameRoom() {
       return;
     }
     try {
-      const gameRef = doc(db, "games", id as string);
+      const gameRef = db.collection("games").doc(id as string);
       const roundEnd = getServerTime() + 120000;
-      await updateDoc(gameRef, {
+      await gameRef.update({
         word: w,
         currentWord: w,
         roundEndTimestamp: roundEnd,
         guessed: [],
-        lastUpdated: serverTimestamp(),
+        lastUpdated: firestore.FieldValue.serverTimestamp(),
       });
     } catch (e) {
       console.error("custom word select failed", e);
@@ -1615,9 +1633,11 @@ export default function GameRoom() {
                               playSound(
                                 require("../../assets/sounds/word.mp3"),
                               );
-                              const gameRef = doc(db, "games", id as string);
+                              const gameRef = db
+                                .collection("games")
+                                .doc(id as string);
                               const roundEnd = getServerTime() + 120000;
-                              await updateDoc(gameRef, {
+                              await gameRef.update({
                                 word: w,
                                 currentWord: w,
                                 roundEndTimestamp: roundEnd,

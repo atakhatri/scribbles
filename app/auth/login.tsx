@@ -1,5 +1,4 @@
 import { useRouter } from "expo-router";
-import { signInWithEmailAndPassword } from "firebase/auth";
 import React, { useState } from "react";
 import {
   ActivityIndicator,
@@ -23,7 +22,7 @@ export default function Login() {
   const handleLogin = async () => {
     setLoading(true);
     try {
-      await signInWithEmailAndPassword(auth, email, password);
+      await auth.signInWithEmailAndPassword(email, password);
       playSound(require("../../assets/sounds/intro.mp3"));
       router.replace("/"); // Go back to Lobby
     } catch (error: any) {

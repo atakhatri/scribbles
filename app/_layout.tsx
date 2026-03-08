@@ -1,14 +1,6 @@
 import AnimatedPreloader from "@/components/animatedPreloader";
+import { FirebaseAuthTypes } from "@react-native-firebase/auth";
 import { Stack, useRouter, useSegments } from "expo-router";
-import { onAuthStateChanged, User } from "firebase/auth";
-import {
-  collection,
-  doc,
-  getDocs,
-  query,
-  updateDoc,
-  where,
-} from "firebase/firestore";
 import { useEffect, useRef, useState } from "react";
 import { Animated, AppState, StyleSheet, View } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -19,7 +11,7 @@ export default function RootLayout() {
   const [authInitialized, setAuthInitialized] = useState(false);
   const [splashAnimationFinished, setSplashAnimationFinished] = useState(false);
   const [splashMounted, setSplashMounted] = useState(true);
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<FirebaseAuthTypes.User | null>(null);
   const router = useRouter();
   const segments = useSegments();
   const fadeAnim = useRef(new Animated.Value(1)).current;
@@ -27,7 +19,7 @@ export default function RootLayout() {
   const initializing = !authInitialized || !splashAnimationFinished;
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+    const unsubscribe = auth.onAuthStateChanged((currentUser) => {
       setUser(currentUser);
       setAuthInitialized(true);
     });
@@ -66,22 +58,24 @@ export default function RootLayout() {
   useEffect(() => {
     if (!user) return;
 
-    let userRef: ReturnType<typeof doc>;
+    let userRef: any;
     let intervalId: NodeJS.Timeout;
     let subscription: any;
 
     const initializeStatusTracker = async () => {
       // Determine which collection the user belongs to
-      const usersDoc = await getDocs(
-        query(collection(db, "users"), where("__name__", "==", user.uid)),
-      );
-
-      const collectionName = usersDoc.empty ? "guestUsers" : "users";
-      userRef = doc(db, collectionName, user.uid);
+      try {
+        const usersDocSnap = await db.collection("users").doc(user.uid).get();
+        const collectionName = usersDocSnap.exists ? "users" : "guestUsers";
+        userRef = db.collection(collectionName).doc(user.uid);
+      } catch (e) {
+        // Default to users collection
+        userRef = db.collection("users").doc(user.uid);
+      }
 
       const setOnline = async () => {
         try {
-          await updateDoc(userRef, {
+          await userRef.update({
             isOnline: true,
             lastSeen: Date.now(),
           });
@@ -92,7 +86,7 @@ export default function RootLayout() {
 
       const setOffline = async () => {
         try {
-          await updateDoc(userRef, {
+          await userRef.update({
             isOnline: false,
             lastSeen: Date.now(),
           });
@@ -121,10 +115,12 @@ export default function RootLayout() {
 
       // Set offline on unmount
       if (userRef) {
-        updateDoc(userRef, {
-          isOnline: false,
-          lastSeen: Date.now(),
-        }).catch(() => {});
+        userRef
+          .update({
+            isOnline: false,
+            lastSeen: Date.now(),
+          })
+          .catch(() => {});
       }
     };
   }, [user]);

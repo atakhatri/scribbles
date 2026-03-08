@@ -1,12 +1,4 @@
 import { Ionicons } from "@expo/vector-icons";
-import {
-  addDoc,
-  collection,
-  onSnapshot,
-  orderBy,
-  query,
-  serverTimestamp,
-} from "firebase/firestore";
 import React, { useEffect, useRef, useState } from "react";
 import {
   Animated,
@@ -26,7 +18,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useToast } from "../context/ToastContext";
-import { db } from "../firebaseConfig";
+import { db, firestore } from "../firebaseConfig";
 
 interface ChatMessage {
   id: string;
@@ -165,36 +157,40 @@ export default function ChatWindow({
     if (!gameId) return;
 
     isInitialLoad.current = true;
-    const messagesRef = collection(db, "games", gameId, "messages");
-    const q = query(messagesRef, orderBy("timestamp", "asc"));
+    const messagesRef = db
+      .collection("games")
+      .doc(gameId)
+      .collection("messages");
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      if (isInitialLoad.current) {
-        isInitialLoad.current = false;
-      } else {
-        snapshot.docChanges().forEach((change) => {
-          if (change.type === "added") {
-            const data = change.doc.data();
-            if (
-              data.isCorrectGuess &&
-              data.userId !== currentUserRef.current?.uid
-            ) {
-              playSound(require("../assets/sounds/correct2.mp3"));
+    const unsubscribe = messagesRef
+      .orderBy("timestamp", "asc")
+      .onSnapshot((snapshot) => {
+        if (isInitialLoad.current) {
+          isInitialLoad.current = false;
+        } else {
+          snapshot.docChanges().forEach((change) => {
+            if (change.type === "added") {
+              const data = change.doc.data();
+              if (
+                data.isCorrectGuess &&
+                data.userId !== currentUserRef.current?.uid
+              ) {
+                playSound(require("../assets/sounds/correct2.mp3"));
+              }
             }
-          }
-        });
-      }
+          });
+        }
 
-      const msgs: ChatMessage[] = [];
-      snapshot.forEach((doc) => {
-        msgs.push({ id: doc.id, ...doc.data() } as ChatMessage);
+        const msgs: ChatMessage[] = [];
+        snapshot.forEach((doc) => {
+          msgs.push({ id: doc.id, ...doc.data() } as ChatMessage);
+        });
+        setMessages(msgs);
+        setTimeout(
+          () => flatListRef.current?.scrollToEnd({ animated: true }),
+          100,
+        );
       });
-      setMessages(msgs);
-      setTimeout(
-        () => flatListRef.current?.scrollToEnd({ animated: true }),
-        100,
-      );
-    });
 
     return () => unsubscribe();
   }, [gameId]);
@@ -230,33 +226,45 @@ export default function ChatWindow({
         return;
       }
       // Don't show the word in chat, show a system message or specific style
-      await addDoc(collection(db, "games", gameId, "messages"), {
-        userId: currentUser.uid,
-        userName: currentUser.displayName || "Player",
-        text: "Correctly guessed the word!",
-        isCorrectGuess: true,
-        timestamp: serverTimestamp(),
-      });
+      await db
+        .collection("games")
+        .doc(gameId)
+        .collection("messages")
+        .add({
+          userId: currentUser.uid,
+          userName: currentUser.displayName || "Player",
+          text: "Correctly guessed the word!",
+          isCorrectGuess: true,
+          timestamp: firestore.FieldValue.serverTimestamp(),
+        });
 
       await onCorrectGuess(currentUser.uid);
     } else if (isClose && !isDrawer && !alreadyGuessed) {
       // Close guess - send system message but don't reveal text
-      await addDoc(collection(db, "games", gameId, "messages"), {
-        userId: currentUser.uid,
-        userName: currentUser.displayName || "Player",
-        text: `${currentUser.displayName || "Player"} is close!`,
-        isCloseGuess: true,
-        timestamp: serverTimestamp(),
-      });
+      await db
+        .collection("games")
+        .doc(gameId)
+        .collection("messages")
+        .add({
+          userId: currentUser.uid,
+          userName: currentUser.displayName || "Player",
+          text: `${currentUser.displayName || "Player"} is close!`,
+          isCloseGuess: true,
+          timestamp: firestore.FieldValue.serverTimestamp(),
+        });
     } else {
       // Normal message
-      await addDoc(collection(db, "games", gameId, "messages"), {
-        userId: currentUser.uid,
-        userName: currentUser.displayName || "Player",
-        text: text,
-        isCorrectGuess: false,
-        timestamp: serverTimestamp(),
-      });
+      await db
+        .collection("games")
+        .doc(gameId)
+        .collection("messages")
+        .add({
+          userId: currentUser.uid,
+          userName: currentUser.displayName || "Player",
+          text: text,
+          isCorrectGuess: false,
+          timestamp: firestore.FieldValue.serverTimestamp(),
+        });
     }
 
     setInputText("");

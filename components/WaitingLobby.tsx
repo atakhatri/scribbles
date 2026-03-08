@@ -1,7 +1,6 @@
 import GRADIENTS from "@/data/gradients";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
-import { arrayRemove, doc, updateDoc } from "firebase/firestore";
 import React, { useState } from "react";
 import {
   Modal,
@@ -12,7 +11,7 @@ import {
   View,
 } from "react-native";
 import { useToast } from "../context/ToastContext";
-import { auth, db } from "../firebaseConfig";
+import { auth, db, firestore } from "../firebaseConfig";
 import InviteFriendsModal from "./InviteFriendsModal";
 
 const AVATAR_GRADIENTS = GRADIENTS;
@@ -67,9 +66,12 @@ export default function WaitingLobby({
             playSound(require("../assets/sounds/decline.mp3"));
             try {
               if (!me) return;
-              await updateDoc(doc(db, "games", roomId), {
-                players: arrayRemove(me.uid),
-              });
+              await db
+                .collection("games")
+                .doc(roomId)
+                .update({
+                  players: firestore.FieldValue.arrayRemove(me.uid),
+                });
             } catch (e) {
               console.error("Failed to leave room", e);
             }

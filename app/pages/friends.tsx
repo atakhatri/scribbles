@@ -1,20 +1,9 @@
 import { useToast } from "@/context/ToastContext";
 import GRADIENTS from "@/data/gradients";
-import { auth, db } from "@/firebaseConfig";
+import { auth, db, firestore } from "@/firebaseConfig";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import {
-  arrayRemove,
-  arrayUnion,
-  collection,
-  doc,
-  getDocs,
-  onSnapshot,
-  query,
-  updateDoc,
-  where,
-} from "firebase/firestore";
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -98,10 +87,8 @@ export default function FriendsScreen() {
   const getUserCollection = async (
     userId: string,
   ): Promise<"users" | "guestUsers"> => {
-    const usersDoc = await getDocs(
-      query(collection(db, "users"), where("__name__", "==", userId)),
-    );
-    return usersDoc.empty ? "guestUsers" : "users";
+    const usersDoc = await db.collection("users").doc(userId).get();
+    return usersDoc.exists ? "users" : "guestUsers";
   };
 
   // 1. Listen to MY profile changes (Real-time updates for requests)
@@ -111,20 +98,15 @@ export default function FriendsScreen() {
 
     // Check if current user is in users or guestUsers collection
     const checkAndListen = async () => {
-      let myDocRef = doc(db, "users", currentUser.uid);
-      let docSnap = await getDocs(
-        query(
-          collection(db, "users"),
-          where("__name__", "==", currentUser.uid),
-        ),
-      );
+      let myDocRef = db.collection("users").doc(currentUser.uid);
+      let docSnap = await db.collection("users").doc(currentUser.uid).get();
 
-      if (docSnap.empty) {
-        myDocRef = doc(db, "guestUsers", currentUser.uid);
+      if (!docSnap.exists) {
+        myDocRef = db.collection("guestUsers").doc(currentUser.uid);
       }
 
-      const unsubscribe = onSnapshot(myDocRef, async (docSnap) => {
-        if (docSnap.exists()) {
+      const unsubscribe = myDocRef.onSnapshot(async (docSnap) => {
+        if (docSnap.exists) {
           const data = docSnap.data();
           const fIds = data.friends || [];
           const incIds = data.incomingRequests || [];
@@ -177,31 +159,41 @@ export default function FriendsScreen() {
       }
 
       // Query both users and guestUsers collections
-      const usersRef = collection(db, "users");
-      const guestUsersRef = collection(db, "guestUsers");
-
-      const usersQuery = query(usersRef, where("__name__", "in", idsToCheck));
-      const guestUsersQuery = query(
-        guestUsersRef,
-        where("__name__", "in", idsToCheck),
-      );
-
-      const [usersSnapshot, guestUsersSnapshot] = await Promise.all([
-        getDocs(usersQuery),
-        getDocs(guestUsersQuery),
-      ]);
-
       const loadedUsers: UserProfile[] = [];
-      usersSnapshot.forEach((doc) => {
-        loadedUsers.push({ id: doc.id, ...doc.data() } as UserProfile);
-      });
-      guestUsersSnapshot.forEach((doc) => {
-        loadedUsers.push({
-          id: doc.id,
-          isGuest: true,
-          ...doc.data(),
-        } as UserProfile);
-      });
+
+      // Fetch from users collection
+      for (const id of idsToCheck) {
+        try {
+          const userDoc = await db.collection("users").doc(id).get();
+          if (userDoc.exists) {
+            loadedUsers.push({
+              id: userDoc.id,
+              ...userDoc.data(),
+            } as UserProfile);
+          }
+        } catch (e) {
+          // Continue to next
+        }
+      }
+
+      // Fetch from guestUsers collection
+      for (const id of idsToCheck) {
+        // Only fetch if not already found
+        if (!loadedUsers.find((u) => u.id === id)) {
+          try {
+            const guestDoc = await db.collection("guestUsers").doc(id).get();
+            if (guestDoc.exists) {
+              loadedUsers.push({
+                id: guestDoc.id,
+                isGuest: true,
+                ...guestDoc.data(),
+              } as UserProfile);
+            }
+          } catch (e) {
+            // Continue to next
+          }
+        }
+      }
 
       // Sort by Last Seen Descending (Most recent first)
       loadedUsers.sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
@@ -219,45 +211,51 @@ export default function FriendsScreen() {
     setSearchResults([]);
 
     try {
-      const usersRef = collection(db, "users");
-      const guestUsersRef = collection(db, "guestUsers");
       const text = searchText.trim();
-
-      // QUERY 1: Username "Starts With" search (both collections)
-      const usernameQuery = query(
-        usersRef,
-        where("username", ">=", text),
-        where("username", "<=", text + "\uf8ff"),
-      );
-      const guestUsernameQuery = query(
-        guestUsersRef,
-        where("username", ">=", text),
-        where("username", "<=", text + "\uf8ff"),
-      );
-
-      // QUERY 2: Email Exact Match (only regular users - guests don't have searchable emails)
-      const emailQuery = query(usersRef, where("email", "==", text));
-
-      const [usernameSnap, guestUsernameSnap, emailSnap] = await Promise.all([
-        getDocs(usernameQuery),
-        getDocs(guestUsernameQuery),
-        getDocs(emailQuery),
-      ]);
-
       const foundUsers = new Map<string, UserProfile>();
-      usernameSnap.forEach((doc) =>
-        foundUsers.set(doc.id, { id: doc.id, ...doc.data() } as UserProfile),
-      );
-      guestUsernameSnap.forEach((doc) =>
-        foundUsers.set(doc.id, {
-          id: doc.id,
-          isGuest: true,
-          ...doc.data(),
-        } as UserProfile),
-      );
-      emailSnap.forEach((doc) =>
-        foundUsers.set(doc.id, { id: doc.id, ...doc.data() } as UserProfile),
-      );
+
+      // Search in users collection
+      try {
+        const usersSnap = await db
+          .collection("users")
+          .where("username", ">=", text)
+          .where("username", "<=", text + "\uf8ff")
+          .get();
+
+        usersSnap.docs.forEach((doc) =>
+          foundUsers.set(doc.id, { id: doc.id, ...doc.data() } as UserProfile),
+        );
+
+        // Try email search on users
+        const emailSnap = await db
+          .collection("users")
+          .where("email", "==", text)
+          .get();
+        emailSnap.docs.forEach((doc) =>
+          foundUsers.set(doc.id, { id: doc.id, ...doc.data() } as UserProfile),
+        );
+      } catch (e) {
+        console.error("Users search error:", e);
+      }
+
+      // Search in guestUsers collection
+      try {
+        const guestSnap = await db
+          .collection("guestUsers")
+          .where("username", ">=", text)
+          .where("username", "<=", text + "\uf8ff")
+          .get();
+
+        guestSnap.docs.forEach((doc) =>
+          foundUsers.set(doc.id, {
+            id: doc.id,
+            isGuest: true,
+            ...doc.data(),
+          } as UserProfile),
+        );
+      } catch (e) {
+        console.error("Guest users search error:", e);
+      }
 
       foundUsers.delete(currentUser?.uid || ""); // Remove myself
       setSearchResults(Array.from(foundUsers.values()));
@@ -276,12 +274,14 @@ export default function FriendsScreen() {
       const myCollection = await getUserCollection(currentUser.uid);
       const targetCollection = await getUserCollection(targetUserId);
 
-      const myRef = doc(db, myCollection, currentUser.uid);
-      const targetRef = doc(db, targetCollection, targetUserId);
+      const myRef = db.collection(myCollection).doc(currentUser.uid);
+      const targetRef = db.collection(targetCollection).doc(targetUserId);
 
-      await updateDoc(myRef, { outgoingRequests: arrayUnion(targetUserId) });
-      await updateDoc(targetRef, {
-        incomingRequests: arrayUnion(currentUser.uid),
+      await myRef.update({
+        outgoingRequests: firestore.FieldValue.arrayUnion(targetUserId),
+      });
+      await targetRef.update({
+        incomingRequests: firestore.FieldValue.arrayUnion(currentUser.uid),
       });
 
       showToast({ message: "Friend request sent!", type: "success" });
@@ -297,17 +297,17 @@ export default function FriendsScreen() {
       const myCollection = await getUserCollection(currentUser.uid);
       const requesterCollection = await getUserCollection(requesterId);
 
-      const myRef = doc(db, myCollection, currentUser.uid);
-      const requesterRef = doc(db, requesterCollection, requesterId);
+      const myRef = db.collection(myCollection).doc(currentUser.uid);
+      const requesterRef = db.collection(requesterCollection).doc(requesterId);
 
-      await updateDoc(myRef, {
-        friends: arrayUnion(requesterId),
-        incomingRequests: arrayRemove(requesterId),
+      await myRef.update({
+        friends: firestore.FieldValue.arrayUnion(requesterId),
+        incomingRequests: firestore.FieldValue.arrayRemove(requesterId),
       });
 
-      await updateDoc(requesterRef, {
-        friends: arrayUnion(currentUser.uid),
-        outgoingRequests: arrayRemove(currentUser.uid),
+      await requesterRef.update({
+        friends: firestore.FieldValue.arrayUnion(currentUser.uid),
+        outgoingRequests: firestore.FieldValue.arrayRemove(currentUser.uid),
       });
 
       showToast({ message: "You are now friends!", type: "success" });
@@ -331,15 +331,17 @@ export default function FriendsScreen() {
           onPress: async () => {
             try {
               const myCollection = await getUserCollection(currentUser.uid);
-              const myRef = doc(db, myCollection, currentUser.uid);
+              const myRef = db.collection(myCollection).doc(currentUser.uid);
 
               // Process removals in parallel
               const promises = selectedFriends.map(async (friendId) => {
                 const friendCollection = await getUserCollection(friendId);
-                const friendRef = doc(db, friendCollection, friendId);
-                await updateDoc(myRef, { friends: arrayRemove(friendId) });
-                await updateDoc(friendRef, {
-                  friends: arrayRemove(currentUser.uid),
+                const friendRef = db.collection(friendCollection).doc(friendId);
+                await myRef.update({
+                  friends: firestore.FieldValue.arrayRemove(friendId),
+                });
+                await friendRef.update({
+                  friends: firestore.FieldValue.arrayRemove(currentUser.uid),
                 });
               });
 
@@ -364,9 +366,9 @@ export default function FriendsScreen() {
     try {
       await sendRequest(friendId); // Reusing sendRequest logic isn't quite right for game invites, let's fix:
       const targetCollection = await getUserCollection(friendId);
-      const targetRef = doc(db, targetCollection, friendId);
-      await updateDoc(targetRef, {
-        gameInvites: arrayUnion({
+      const targetRef = db.collection(targetCollection).doc(friendId);
+      await targetRef.update({
+        gameInvites: firestore.FieldValue.arrayUnion({
           roomId: inviteToRoomId,
           inviterName: currentUser.displayName || "Player",
           timestamp: Date.now(),

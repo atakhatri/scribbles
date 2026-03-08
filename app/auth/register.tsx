@@ -1,6 +1,4 @@
 import { useRouter } from "expo-router";
-import { createUserWithEmailAndPassword, updateProfile } from "firebase/auth";
-import { doc, serverTimestamp, setDoc } from "firebase/firestore";
 import React, { useState } from "react";
 import {
   ActivityIndicator,
@@ -12,7 +10,7 @@ import {
   View,
 } from "react-native";
 import { useToast } from "../../context/ToastContext";
-import { auth, db } from "../../firebaseConfig";
+import { auth, db, firestore } from "../../firebaseConfig";
 
 export default function Register() {
   const router = useRouter();
@@ -31,23 +29,22 @@ export default function Register() {
     setLoading(true);
     try {
       // 1. Create Auth User
-      const userCredential = await createUserWithEmailAndPassword(
-        auth,
+      const userCredential = await auth.createUserWithEmailAndPassword(
         email,
         password,
       );
       const user = userCredential.user;
 
       // 2. Create Firestore User Profile
-      await setDoc(doc(db, "users", user.uid), {
+      await db.collection("users").doc(user.uid).set({
         username: username,
         email: email,
-        createdAt: serverTimestamp(),
+        createdAt: firestore.FieldValue.serverTimestamp(),
         friends: [],
       });
 
       // 3. Update Auth Profile (for quicker access)
-      await updateProfile(user, { displayName: username });
+      await user.updateProfile({ displayName: username });
 
       // 4. Go to Lobby
       router.replace("/");

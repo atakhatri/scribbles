@@ -1,6 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
-import { arrayUnion, doc, getDoc, updateDoc } from "firebase/firestore";
 import React, { useEffect, useState } from "react";
 import {
   FlatList,
@@ -13,7 +12,7 @@ import {
 } from "react-native";
 import { useToast } from "../context/ToastContext";
 import GRADIENTS from "../data/gradients";
-import { auth, db } from "../firebaseConfig";
+import { auth, db, firestore } from "../firebaseConfig";
 
 const AVATAR_GRADIENTS = GRADIENTS;
 
@@ -55,22 +54,22 @@ export default function InviteFriendsModal({
         if (!me) return;
 
         // Check if current user is in users or guestUsers collection
-        let meDoc = await getDoc(doc(db, "users", me.uid));
-        if (!meDoc.exists()) {
-          meDoc = await getDoc(doc(db, "guestUsers", me.uid));
+        let meDoc = await db.collection("users").doc(me.uid).get();
+        if (!meDoc.exists) {
+          meDoc = await db.collection("guestUsers").doc(me.uid).get();
         }
 
-        const fIds: string[] = meDoc.exists() ? meDoc.data().friends || [] : [];
+        const fIds: string[] = meDoc.exists ? meDoc.data()?.friends || [] : [];
         const profiles: any[] = [];
 
         // Fetch friends from both collections
         for (const id of fIds) {
           try {
-            let d = await getDoc(doc(db, "users", id));
-            if (!d.exists()) {
-              d = await getDoc(doc(db, "guestUsers", id));
+            let d = await db.collection("users").doc(id).get();
+            if (!d.exists) {
+              d = await db.collection("guestUsers").doc(id).get();
             }
-            if (d.exists()) profiles.push({ id: d.id, ...(d.data() || {}) });
+            if (d.exists) profiles.push({ id: d.id, ...(d.data() || {}) });
           } catch (e) {
             // ignore
           }
@@ -104,12 +103,19 @@ export default function InviteFriendsModal({
       const inviterName = auth.currentUser?.displayName || "A player";
 
       // Determine target collection
-      let targetDoc = await getDoc(doc(db, "users", targetId));
-      const targetCollection = targetDoc.exists() ? "users" : "guestUsers";
+      let targetDoc = await db.collection("users").doc(targetId).get();
+      const targetCollection = targetDoc.exists ? "users" : "guestUsers";
 
-      await updateDoc(doc(db, targetCollection, targetId), {
-        gameInvites: arrayUnion({ roomId, inviterName, timestamp: Date.now() }),
-      });
+      await db
+        .collection(targetCollection)
+        .doc(targetId)
+        .update({
+          gameInvites: firestore.FieldValue.arrayUnion({
+            roomId,
+            inviterName,
+            timestamp: Date.now(),
+          }),
+        });
       setInviteIds((prev) => [...prev, targetId]);
       showToast({ message: "Invite sent!", type: "success" });
     } catch (e) {

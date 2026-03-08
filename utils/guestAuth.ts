@@ -1,6 +1,4 @@
-import { signInAnonymously, User } from "firebase/auth";
-import { deleteDoc, doc, serverTimestamp, setDoc } from "firebase/firestore";
-import { auth, db } from "../firebaseConfig";
+import { auth, db, firestore } from "../firebaseConfig";
 
 // Generate a random guest username
 const generateGuestUsername = () => {
@@ -35,18 +33,18 @@ const generateGuestUsername = () => {
 };
 
 // Sign in as guest
-export const signInAsGuest = async (): Promise<User> => {
+export const signInAsGuest = async () => {
     try {
-        const userCredential = await signInAnonymously(auth);
+        const userCredential = await auth.signInAnonymously();
         const user = userCredential.user;
         const guestUsername = generateGuestUsername();
 
         // Create guest user document in guestUsers collection
-        await setDoc(doc(db, "guestUsers", user.uid), {
+        await db.collection("guestUsers").doc(user.uid).set({
             username: guestUsername,
             email: "Guest",
             isGuest: true,
-            createdAt: serverTimestamp(),
+            createdAt: firestore.FieldValue.serverTimestamp(),
             friends: [],
         });
 
@@ -61,7 +59,7 @@ export const signInAsGuest = async (): Promise<User> => {
 export const cleanupGuestAccount = async (userId: string) => {
     try {
         // Check if user document exists in guestUsers collection
-        await deleteDoc(doc(db, "guestUsers", userId));
+        await db.collection("guestUsers").doc(userId).delete();
         console.log("Guest account cleaned up:", userId);
     } catch (error) {
         console.error("Error cleaning up guest account:", error);
@@ -71,11 +69,8 @@ export const cleanupGuestAccount = async (userId: string) => {
 // Check if a user is a guest
 export const isGuestUser = async (userId: string): Promise<boolean> => {
     try {
-        const guestDocRef = doc(db, "guestUsers", userId);
-        const guestDoc = await (await import("firebase/firestore")).getDoc(
-            guestDocRef,
-        );
-        return guestDoc.exists();
+        const guestDoc = await db.collection("guestUsers").doc(userId).get();
+        return !!guestDoc.exists;
     } catch (error) {
         console.error("Error checking if user is guest:", error);
         return false;

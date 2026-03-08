@@ -1,26 +1,10 @@
 import GRADIENTS from "@/data/gradients";
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { FirebaseAuthTypes } from "@react-native-firebase/auth";
 import { useFocusEffect } from "@react-navigation/native";
 import { LinearGradient } from "expo-linear-gradient";
 import { usePathname, useRouter } from "expo-router";
-import { onAuthStateChanged, User } from "firebase/auth";
-import {
-  arrayRemove,
-  arrayUnion,
-  collection,
-  deleteDoc,
-  deleteField,
-  doc,
-  getDoc,
-  getDocs,
-  onSnapshot,
-  query,
-  serverTimestamp,
-  setDoc,
-  updateDoc,
-  where,
-} from "firebase/firestore";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -48,7 +32,7 @@ import GameInviteModal from "../components/gameInvite";
 import Preloader from "../components/preloader";
 import { useToast } from "../context/ToastContext";
 import WELCOME_TEXT from "../data/welcomePhrases";
-import { auth, db } from "../firebaseConfig";
+import { auth, db, firestore } from "../firebaseConfig";
 import { signInAsGuest } from "../utils/guestAuth";
 // Generate numbers 1-20 for the wheel
 const ROUND_OPTIONS = Array.from({ length: 20 }, (_, i) => i + 1);
@@ -102,7 +86,7 @@ export default function Index() {
   const pathname = usePathname();
   const insets = useSafeAreaInsets();
   const { showToast, showAlert, playSound } = useToast();
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<FirebaseAuthTypes.User | null>(null);
   const [loading, setLoading] = useState(true);
   const [splashAnimationFinished, setSplashAnimationFinished] = useState(false);
   const [roomCode, setRoomCode] = useState("");
@@ -263,12 +247,10 @@ export default function Index() {
 
   const cleanupUserFromOpenGames = async (uid: string) => {
     try {
-      const gamesRef = collection(db, "games");
-      const gamesQuery = query(
-        gamesRef,
-        where("players", "array-contains", uid),
-      );
-      const gamesSnap = await getDocs(gamesQuery);
+      const gamesSnap = await db
+        .collection("games")
+        .where("players", "array-contains", uid)
+        .get();
 
       for (const gameDoc of gamesSnap.docs) {
         const data = gameDoc.data() as any;
@@ -281,7 +263,7 @@ export default function Index() {
         if (updatedPlayers.length === players.length) continue;
 
         if (updatedPlayers.length === 0) {
-          await deleteDoc(gameDoc.ref);
+          await gameDoc.ref.delete();
           continue;
         }
 
@@ -309,7 +291,7 @@ export default function Index() {
           updates.roundEndTimestamp = Date.now() + 30000;
         }
 
-        await updateDoc(gameDoc.ref, updates);
+        await gameDoc.ref.update(updates);
       }
     } catch (e) {
       console.error("Failed to cleanup stale player from open games", e);
@@ -409,7 +391,7 @@ export default function Index() {
 
   // 1. Listen for Auth State
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+    const unsubscribe = auth.onAuthStateChanged(async (currentUser) => {
       setUser(currentUser);
 
       if (currentUser) {
@@ -418,17 +400,17 @@ export default function Index() {
         await cleanupUserFromOpenGames(currentUser.uid);
 
         // Check if user is in regular users or guestUsers collection
-        let docRef = doc(db, "users", currentUser.uid);
-        let docSnap = await getDoc(docRef);
+        let docRef = db.collection("users").doc(currentUser.uid);
+        let docSnap = await docRef.get();
 
-        if (!docSnap.exists()) {
+        if (!docSnap.exists) {
           // Check guestUsers collection
-          docRef = doc(db, "guestUsers", currentUser.uid);
-          docSnap = await getDoc(docRef);
+          docRef = db.collection("guestUsers").doc(currentUser.uid);
+          docSnap = await docRef.get();
         }
 
         try {
-          if (docSnap.exists()) {
+          if (docSnap.exists) {
             setUsername(docSnap.data().username);
           } else {
             setUsername(currentUser.displayName || "Player");
@@ -463,15 +445,15 @@ export default function Index() {
 
     // Check both users and guestUsers collections
     const checkCollection = async () => {
-      let userDocRef = doc(db, "users", user.uid);
-      let userDoc = await getDoc(userDocRef);
+      let userDocRef = db.collection("users").doc(user.uid);
+      let userDoc = await userDocRef.get();
 
-      if (!userDoc.exists()) {
-        userDocRef = doc(db, "guestUsers", user.uid);
+      if (!userDoc.exists) {
+        userDocRef = db.collection("guestUsers").doc(user.uid);
       }
 
-      const unsub = onSnapshot(userDocRef, (docSnap) => {
-        if (docSnap.exists()) {
+      const unsub = userDocRef.onSnapshot((docSnap) => {
+        if (docSnap.exists) {
           const data = docSnap.data();
           const invites = data.gameInvites || [];
           if (invites.length > 0 && pathname === "/") {
@@ -508,10 +490,11 @@ export default function Index() {
   // Listen to active game (Waiting Group)
   useEffect(() => {
     if (!activeGameId) return;
-    const unsub = onSnapshot(
-      doc(db, "games", activeGameId),
-      async (docSnap) => {
-        if (docSnap.exists()) {
+    const unsub = db
+      .collection("games")
+      .doc(activeGameId)
+      .onSnapshot(async (docSnap) => {
+        if (docSnap.exists) {
           const data = docSnap.data();
           setActiveGameHostId((data as any).hostId || null);
 
@@ -535,27 +518,23 @@ export default function Index() {
               setActiveGamePlayers([]);
             } else {
               // Fetch from both users and guestUsers collections
-              const usersRef = collection(db, "users");
-              const guestUsersRef = collection(db, "guestUsers");
+              const pData: any[] = [];
 
-              const usersQuery = query(
-                usersRef,
-                where("__name__", "in", pIds.slice(0, 10)),
-              );
-              const guestUsersQuery = query(
-                guestUsersRef,
-                where("__name__", "in", pIds.slice(0, 10)),
-              );
-
-              const [usersSnap, guestUsersSnap] = await Promise.all([
-                getDocs(usersQuery),
-                getDocs(guestUsersQuery),
-              ]);
-
-              const pData = [
-                ...usersSnap.docs.map((d) => ({ id: d.id, ...d.data() })),
-                ...guestUsersSnap.docs.map((d) => ({ id: d.id, ...d.data() })),
-              ];
+              for (const id of pIds.slice(0, 10)) {
+                try {
+                  let doc = await db.collection("users").doc(id).get();
+                  if (doc.exists) {
+                    pData.push({ id: doc.id, ...doc.data() });
+                  } else {
+                    doc = await db.collection("guestUsers").doc(id).get();
+                    if (doc.exists) {
+                      pData.push({ id: doc.id, ...doc.data() });
+                    }
+                  }
+                } catch (e) {
+                  // Continue to next ID
+                }
+              }
 
               setActiveGamePlayers(pData);
             }
@@ -571,8 +550,7 @@ export default function Index() {
           setShowJoin(true);
           showToast({ message: "Lobby was closed by host", type: "info" });
         }
-      },
-    );
+      });
     return () => unsub();
   }, [activeGameId, pathname, showToast]);
 
@@ -587,28 +565,34 @@ export default function Index() {
       return;
     }
     try {
-      // First, try to fetch from users collection
-      const usersRef = collection(db, "users");
-      const q = query(usersRef, where("__name__", "in", idsToFetch));
-      const snap = await getDocs(q);
-      const friendsData = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      // First, try to fetch from users collection - using doc ID array
+      const friendsData = [];
+
+      // Fetch from users collection
+      for (const id of idsToFetch) {
+        try {
+          const doc = await db.collection("users").doc(id).get();
+          if (doc.exists) {
+            friendsData.push({ id: doc.id, ...doc.data() });
+          }
+        } catch (e) {
+          // Continue to next ID
+        }
+      }
 
       // Also check guestUsers collection for any missing IDs
       const foundIds = friendsData.map((f) => f.id);
       const missingIds = idsToFetch.filter((id) => !foundIds.includes(id));
 
-      if (missingIds.length > 0) {
-        const guestUsersRef = collection(db, "guestUsers");
-        const guestQuery = query(
-          guestUsersRef,
-          where("__name__", "in", missingIds),
-        );
-        const guestSnap = await getDocs(guestQuery);
-        const guestData = guestSnap.docs.map((d) => ({
-          id: d.id,
-          ...d.data(),
-        }));
-        friendsData.push(...guestData);
+      for (const id of missingIds) {
+        try {
+          const doc = await db.collection("guestUsers").doc(id).get();
+          if (doc.exists) {
+            friendsData.push({ id: doc.id, ...doc.data() });
+          }
+        } catch (e) {
+          // Continue to next ID
+        }
       }
 
       // Sort by Last Seen Descending
@@ -626,22 +610,22 @@ export default function Index() {
     if (!gameInvite || !user) return;
     try {
       // Check which collection the user is in
-      let userRef = doc(db, "users", user.uid);
-      let userDoc = await getDoc(userRef);
+      let userRef = db.collection("users").doc(user.uid);
+      let userDoc = await userRef.get();
 
-      if (!userDoc.exists()) {
-        userRef = doc(db, "guestUsers", user.uid);
+      if (!userDoc.exists) {
+        userRef = db.collection("guestUsers").doc(user.uid);
       }
 
-      await updateDoc(userRef, {
-        gameInvites: arrayRemove(gameInvite),
+      await userRef.update({
+        gameInvites: firestore.FieldValue.arrayRemove(gameInvite),
       });
 
-      const gameRef = doc(db, "games", gameInvite.roomId);
-      await updateDoc(gameRef, {
-        players: arrayUnion(user.uid),
+      const gameRef = db.collection("games").doc(gameInvite.roomId);
+      await gameRef.update({
+        players: firestore.FieldValue.arrayUnion(user.uid),
         [`scores.${user.uid}`]: 0,
-        lastUpdated: serverTimestamp(),
+        lastUpdated: firestore.FieldValue.serverTimestamp(),
       });
 
       setGameInvite(null);
@@ -656,15 +640,15 @@ export default function Index() {
     if (!gameInvite || !user) return;
     try {
       // Check which collection the user is in
-      let userRef = doc(db, "users", user.uid);
-      let userDoc = await getDoc(userRef);
+      let userRef = db.collection("users").doc(user.uid);
+      let userDoc = await userRef.get();
 
-      if (!userDoc.exists()) {
-        userRef = doc(db, "guestUsers", user.uid);
+      if (!userDoc.exists) {
+        userRef = db.collection("guestUsers").doc(user.uid);
       }
 
-      await updateDoc(userRef, {
-        gameInvites: arrayRemove(gameInvite),
+      await userRef.update({
+        gameInvites: firestore.FieldValue.arrayRemove(gameInvite),
       });
       setGameInvite(null);
     } catch (e) {
@@ -690,35 +674,38 @@ export default function Index() {
       let gameId = activeGameId;
       if (!gameId) {
         gameId = Math.random().toString(36).substring(2, 6).toUpperCase();
-        await setDoc(doc(db, "games", gameId), {
-          status: "waiting",
-          lobbyEnteredAt: null,
-          currentDrawer: user!.uid,
-          currentWord: "",
-          round: 1,
-          maxRounds: selectedRounds,
-          scores: { [user!.uid]: 0 },
-          players: [user!.uid],
-          hostId: user!.uid,
-          guesses: [],
-          createdAt: Date.now(),
-          lastUpdated: serverTimestamp(),
-        });
+        await db
+          .collection("games")
+          .doc(gameId)
+          .set({
+            status: "waiting",
+            lobbyEnteredAt: null,
+            currentDrawer: user!.uid,
+            currentWord: "",
+            round: 1,
+            maxRounds: selectedRounds,
+            scores: { [user!.uid]: 0 },
+            players: [user!.uid],
+            hostId: user!.uid,
+            guesses: [],
+            createdAt: Date.now(),
+            lastUpdated: firestore.FieldValue.serverTimestamp(),
+          });
         setActiveGameId(gameId);
       }
 
       // Check which collection the friend is in
-      let friendRef = doc(db, "users", friendId);
-      let friendDoc = await getDoc(friendRef);
+      let friendRef = db.collection("users").doc(friendId);
+      let friendDoc = await friendRef.get();
 
-      if (!friendDoc.exists()) {
-        friendRef = doc(db, "guestUsers", friendId);
-        friendDoc = await getDoc(friendRef);
+      if (!friendDoc.exists) {
+        friendRef = db.collection("guestUsers").doc(friendId);
+        friendDoc = await friendRef.get();
       }
 
-      if (friendDoc.exists()) {
-        await updateDoc(friendRef, {
-          gameInvites: arrayUnion({
+      if (friendDoc.exists) {
+        await friendRef.update({
+          gameInvites: firestore.FieldValue.arrayUnion({
             roomId: gameId,
             inviterName: username,
             timestamp: Date.now(),
@@ -755,7 +742,7 @@ export default function Index() {
           onPress: async () => {
             playSound(require("../assets/sounds/lock.mp3"));
             try {
-              await deleteDoc(doc(db, "games", activeGameId));
+              await db.collection("games").doc(activeGameId).delete();
               setActiveGameId(null);
               setActiveGamePlayers([]);
             } catch (e) {
@@ -787,11 +774,14 @@ export default function Index() {
           onPress: async () => {
             playSound(require("../assets/sounds/lock.mp3"));
             try {
-              await updateDoc(doc(db, "games", activeGameId), {
-                players: arrayRemove(user.uid),
-                [`scores.${user.uid}`]: deleteField(),
-                lastUpdated: serverTimestamp(),
-              });
+              await db
+                .collection("games")
+                .doc(activeGameId)
+                .update({
+                  players: firestore.FieldValue.arrayRemove(user.uid),
+                  [`scores.${user.uid}`]: firestore.FieldValue.delete(),
+                  lastUpdated: firestore.FieldValue.serverTimestamp(),
+                });
             } catch {
               // Ignore if room is already deleted.
             } finally {
@@ -814,9 +804,9 @@ export default function Index() {
     }
 
     try {
-      await updateDoc(doc(db, "games", activeGameId), {
+      await db.collection("games").doc(activeGameId).update({
         lobbyEnteredAt: Date.now(),
-        lastUpdated: serverTimestamp(),
+        lastUpdated: firestore.FieldValue.serverTimestamp(),
       });
     } catch (e) {
       console.error("Failed to enter lobby for all", e);
@@ -829,7 +819,7 @@ export default function Index() {
     if (!activeGameId) return;
     const newRounds = Math.max(1, Math.min(20, selectedRounds + delta));
     try {
-      await updateDoc(doc(db, "games", activeGameId), {
+      await db.collection("games").doc(activeGameId).update({
         maxRounds: newRounds,
       });
     } catch (e) {
@@ -998,19 +988,22 @@ export default function Index() {
     try {
       if (!user) return;
 
-      await setDoc(doc(db, "games", randomCode), {
-        status: "waiting",
-        lobbyEnteredAt: null,
-        currentDrawer: user.uid,
-        currentWord: "",
-        round: 1,
-        maxRounds: roundsToPlay,
-        scores: { [user.uid]: 0 },
-        players: [user.uid],
-        hostId: user.uid,
-        guesses: [],
-        lastUpdated: serverTimestamp(),
-      });
+      await db
+        .collection("games")
+        .doc(randomCode)
+        .set({
+          status: "waiting",
+          lobbyEnteredAt: null,
+          currentDrawer: user.uid,
+          currentWord: "",
+          round: 1,
+          maxRounds: roundsToPlay,
+          scores: { [user.uid]: 0 },
+          players: [user.uid],
+          hostId: user.uid,
+          guesses: [],
+          lastUpdated: firestore.FieldValue.serverTimestamp(),
+        });
       router.push(`/game/${randomCode}`);
       setCreateRoomModalVisible(false);
     } catch (error) {
@@ -1031,10 +1024,10 @@ export default function Index() {
 
     try {
       // Check if room exists in Firestore
-      const roomRef = doc(db, "games", roomCode.toUpperCase());
-      const roomSnap = await getDoc(roomRef);
+      const roomRef = db.collection("games").doc(roomCode.toUpperCase());
+      const roomSnap = await roomRef.get();
 
-      if (!roomSnap.exists()) {
+      if (!roomSnap.exists) {
         showToast({ message: "Room not found", type: "error" });
         return;
       }
@@ -1069,15 +1062,15 @@ export default function Index() {
     setIsRefreshingFriends(true);
     try {
       // Check both users and guestUsers collections
-      let userDocRef = doc(db, "users", user.uid);
-      let userSnap = await getDoc(userDocRef);
+      let userDocRef = db.collection("users").doc(user.uid);
+      let userSnap = await userDocRef.get();
 
-      if (!userSnap.exists()) {
-        userDocRef = doc(db, "guestUsers", user.uid);
-        userSnap = await getDoc(userDocRef);
+      if (!userSnap.exists) {
+        userDocRef = db.collection("guestUsers").doc(user.uid);
+        userSnap = await userDocRef.get();
       }
 
-      if (!userSnap.exists()) {
+      if (!userSnap.exists) {
         setFriendCount(0);
         setFriendsPreview([]);
         showToast({ message: "Could not find your profile.", type: "error" });

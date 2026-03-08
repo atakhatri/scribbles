@@ -1,47 +1,15 @@
-import { getApp, getApps, initializeApp } from 'firebase/app';
-// @ts-ignore: Suppress type error for getReactNativePersistence if types are outdated
-import AsyncStorage from '@react-native-async-storage/async-storage';
-// @ts-ignore: Fix for "Module has no exported member getReactNativePersistence"
-import { Auth, getAuth, getReactNativePersistence, initializeAuth } from 'firebase/auth';
-import { getDatabase } from 'firebase/database';
-import { getFirestore } from 'firebase/firestore';
+import auth from "@react-native-firebase/auth";
+import database from "@react-native-firebase/database";
+import firestore from "@react-native-firebase/firestore";
 
-// Your Firebase configuration
-const firebaseConfig = {
-    apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,
-    authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,
-    projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID,
-    databaseURL: process.env.EXPO_PUBLIC_FIREBASE_DATABASE_URL,
-    storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET,
-    messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
-    appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID,
-    measurementId: process.env.EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID,
-};
+// React Native Firebase auto-initializes from google-services.json
+// No need to call initializeApp()
 
-// Initialize Firebase
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+// Get references to Firebase services
+const authInstance = auth();
+const db = firestore();
+const rtdb = database();
 
-let auth: Auth;
-
-try {
-    // Explicitly initialize Auth with AsyncStorage persistence.
-    // This is critical for keeping the user logged in after a restart.
-    if (typeof getReactNativePersistence === 'function') {
-        auth = initializeAuth(app, {
-            persistence: getReactNativePersistence(AsyncStorage),
-        });
-    } else {
-        auth = getAuth(app);
-    }
-} catch (error) {
-    // If initializeAuth fails (e.g. if auth instance already exists), fall back to getAuth
-    // which generally attempts to auto-detect persistence.
-    console.log("Auth init fallback:", error);
-    auth = getAuth(app);
-}
-
-const db = getFirestore(app);
-const rtdb = getDatabase(app);
-
-export { auth, db, rtdb };
+// Export firestore module for FieldValue access
+export { authInstance as auth, db, firestore, rtdb };
 
