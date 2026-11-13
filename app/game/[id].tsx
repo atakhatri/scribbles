@@ -30,8 +30,11 @@ import { auth, db, firestore } from "../../firebaseConfig";
 
 interface GameData {
   id?: string;
+  roomId?: string;
   players: any[];
+  playerInfo?: Record<string, { name: string; avatarGradientIndex?: number }>;
   currentDrawer: string;
+  drawer?: string;
   word: string;
   currentWord?: string;
   strokes: Stroke[];
@@ -39,11 +42,13 @@ interface GameData {
   status: "waiting" | "playing" | "finished";
   hostId: string;
   round: number;
+  roundNumber?: number;
   maxRounds?: number;
   scores?: Record<string, number>;
   winner?: string;
   guesses?: any[];
   guessed?: string[];
+  guessedPlayers?: string[];
   messages?: ChatMessage[];
   roundEndTimestamp?: number | null;
   serverNow?: number;
@@ -51,7 +56,8 @@ interface GameData {
 
 const AVATAR_GRADIENTS = GRADIENTS;
 
-const getAvatarGradient = (uid: string) => {
+const getAvatarGradient = (uid?: string) => {
+  if (!uid || typeof uid !== "string") return AVATAR_GRADIENTS[0];
   let hash = 0;
   for (let i = 0; i < uid.length; i++) {
     hash = uid.charCodeAt(i) + ((hash << 5) - hash);
@@ -61,11 +67,21 @@ const getAvatarGradient = (uid: string) => {
 
 export default function GameRoom() {
   const { id } = useLocalSearchParams();
-  const roomId = (id as string)?.toUpperCase();
+  const roomId = (Array.isArray(id) ? id[0] : (id as string))?.toUpperCase();
   const router = useRouter();
   const { showToast, playSound } = useToast();
   const { socket, isConnected } = useSocket();
-  const userId = auth.currentUser?.uid;
+
+  // Track userId reactively so auth.currentUser is never null on initial mount or Web reload
+  const [userId, setUserId] = useState<string | undefined>(
+    auth.currentUser?.uid,
+  );
+  useEffect(() => {
+    const unsub = auth.onAuthStateChanged((u) => {
+      setUserId(u?.uid);
+    });
+    return () => unsub();
+  }, []);
 
   const [gameData, setGameData] = useState<GameData | null>(null);
   const [liveStroke, setLiveStroke] = useState<Stroke | null>(null);
@@ -115,11 +131,13 @@ export default function GameRoom() {
   };
 
   const leaveGameRoom = (withMessage = true) => {
-    if (!roomId || !userId || didLeaveRoomRef.current) return;
+    const activeUid = userId || auth.currentUser?.uid;
+    if (!roomId || !activeUid || didLeaveRoomRef.current) return;
     didLeaveRoomRef.current = true;
     socket?.emit("room:leave", {
       roomId,
-      userId,
+      userId: activeUid,
+      uid: activeUid,
       withMessage,
     });
   };
@@ -127,10 +145,11 @@ export default function GameRoom() {
   // Helper function to calculate current turn within the round
   const calculateCurrentTurn = () => {
     if (!gameData?.players) return 1;
-    const players = gameData.players;
+    const players = gameData.players.filter(Boolean);
+    const activeDrawer = gameData.currentDrawer || gameData.drawer;
     const currentDrawerIndex = players.findIndex((p: any) => {
       const uid = typeof p === "string" ? p : p?.uid;
-      return uid === gameData.currentDrawer;
+      return uid === activeDrawer;
     });
     return currentDrawerIndex >= 0 ? currentDrawerIndex + 1 : 1;
   };
@@ -321,7 +340,7 @@ export default function GameRoom() {
   // Round change animation
   useEffect(() => {
     if (!gameData) return;
-    const currentRound = gameData.round;
+    const currentRound = gameData.round || gameData.roundNumber || 1;
     const maxRounds = gameData.maxRounds || TOTAL_ROUNDS_FALLBACK;
 
     if (lastSeenRound === 0) {
@@ -369,7 +388,7 @@ export default function GameRoom() {
       }
       setLastSeenRound(currentRound);
     }
-  }, [gameData?.round, lastSeenRound, playSound]);
+  }, [gameData?.round, gameData?.roundNumber, lastSeenRound, playSound]);
 
   useEffect(() => {
     // When a new word is set (new turn starts), hide the tools by default
@@ -383,6 +402,30 @@ export default function GameRoom() {
   const [customWord, setCustomWord] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
   const lastPickerKeyRef = useRef<string>("");
+
+  // Normalize incoming state so whether server sends legacy or new keys, GameData is 100% consistent
+  const normalizeState = (raw: any): GameData => {
+    const currentDrawer = raw.currentDrawer || raw.drawer || "";
+    const round = raw.round || raw.roundNumber || 1;
+    const guessed = raw.guessed || raw.guessedPlayers || [];
+    let roundEndTimestamp = raw.roundEndTimestamp ?? null;
+    if (!roundEndTimestamp) {
+      if (raw.isChoosingWord && raw.chooseWordStartTime) {
+        roundEndTimestamp = raw.chooseWordStartTime + 30000;
+      } else if (!raw.isChoosingWord && raw.roundStartTime) {
+        roundEndTimestamp =
+          raw.roundStartTime + (raw.roundDuration || 120) * 1000;
+      }
+    }
+    return {
+      ...raw,
+      id: raw.id || raw.roomId,
+      currentDrawer,
+      round,
+      guessed,
+      roundEndTimestamp,
+    };
+  };
 
   // ---------------- WEBSOCKET ROOM JOIN & LISTENERS ----------------
   useEffect(() => {
@@ -410,8 +453,15 @@ export default function GameRoom() {
         "room:join",
         {
           roomId,
+          uid: userId,
+          userId,
+          name: displayName,
+          displayName,
+          avatar,
+          avatarGradientIndex,
           user: {
             uid: userId,
+            name: displayName,
             displayName,
             avatar,
             avatarGradientIndex,
@@ -426,11 +476,12 @@ export default function GameRoom() {
             router.replace("/");
             return;
           }
-          if (res.state.serverNow) {
-            serverTimeOffsetRef.current = res.state.serverNow - Date.now();
+          const normalized = normalizeState(res.state);
+          if (normalized.serverNow) {
+            serverTimeOffsetRef.current = normalized.serverNow - Date.now();
           }
-          setGameData(res.state);
-          setLiveStroke(res.state.liveStroke || null);
+          setGameData(normalized);
+          setLiveStroke(normalized.liveStroke || null);
           setLoading(false);
         },
       );
@@ -441,12 +492,15 @@ export default function GameRoom() {
     }
 
     const handleRoomState = (state: GameData) => {
-      if (state.id && state.id !== roomId) return;
-      if (state.serverNow) {
-        serverTimeOffsetRef.current = state.serverNow - Date.now();
+      if (!state) return;
+      const incomingId = state.id || state.roomId;
+      if (incomingId && incomingId !== roomId) return;
+      const normalized = normalizeState(state);
+      if (normalized.serverNow) {
+        serverTimeOffsetRef.current = normalized.serverNow - Date.now();
       }
-      setGameData(state);
-      setLiveStroke(state.liveStroke || null);
+      setGameData(normalized);
+      setLiveStroke(normalized.liveStroke || null);
       setLoading(false);
     };
 
@@ -470,29 +524,51 @@ export default function GameRoom() {
     socket.on("room:state", handleRoomState);
     socket.on("draw:strokesUpdated", handleStrokesUpdated);
     socket.on("draw:live", handleLiveStroke);
+    socket.on("canvas:stroke_live", handleLiveStroke);
     socket.on("room:closed", handleRoomClosed);
 
     return () => {
       socket.off("room:state", handleRoomState);
       socket.off("draw:strokesUpdated", handleStrokesUpdated);
       socket.off("draw:live", handleLiveStroke);
+      socket.off("canvas:stroke_live", handleLiveStroke);
       socket.off("room:closed", handleRoomClosed);
     };
   }, [roomId, userId, socket, isConnected, router, showToast]);
 
-  // Leave room on unmount
+  // Keep latest refs for unmount cleanup so re-renders or userId hydration never prematurely emit room:leave
+  const latestRoomIdRef = useRef(roomId);
+  const latestUserIdRef = useRef(userId);
+  const latestSocketRef = useRef(socket);
   useEffect(() => {
-    return () => {
-      leaveGameRoom(true);
-    };
+    latestRoomIdRef.current = roomId;
+    latestUserIdRef.current = userId || auth.currentUser?.uid;
+    latestSocketRef.current = socket;
   }, [roomId, userId, socket]);
 
-  // Remove player when app goes background/inactive on mobile
+  // Only leave room when GameRoom component truly unmounts
+  useEffect(() => {
+    return () => {
+      const rId = latestRoomIdRef.current;
+      const uId = latestUserIdRef.current || auth.currentUser?.uid;
+      if (rId && uId && !didLeaveRoomRef.current) {
+        didLeaveRoomRef.current = true;
+        latestSocketRef.current?.emit("room:leave", {
+          roomId: rId,
+          userId: uId,
+          uid: uId,
+          withMessage: true,
+        });
+      }
+    };
+  }, []);
+
+  // Remove player when app goes to background on mobile
   useEffect(() => {
     if (!roomId || !userId) return;
 
     const sub = AppState.addEventListener("change", (nextState) => {
-      if (nextState === "background" || nextState === "inactive") {
+      if (nextState === "background") {
         leaveGameRoom(false);
       }
     });
@@ -500,23 +576,52 @@ export default function GameRoom() {
     return () => sub.remove();
   }, [roomId, userId]);
 
-  // Build sorted playersList directly from WebSocket room state
+  // Build sorted playersList directly from WebSocket room state (Null-safe for both object and string items)
   useEffect(() => {
     if (!gameData?.players) return;
 
-    const resolved = gameData.players.map((p: any) => ({
-      uid: p.uid,
-      displayName: p.displayName || p.username || "Player",
-      points: gameData.scores
-        ? (gameData.scores[p.uid] ?? p.points ?? 0)
-        : (p.points ?? 0),
-      avatar: p.avatar || null,
-      avatarGradientIndex: p.avatarGradientIndex,
-    }));
+    const rawValid = gameData.players.filter(Boolean);
+    const resolved = rawValid.map((p: any) => {
+      const pUid =
+        typeof p === "string" ? p : p?.uid || p?.id || userId || "anon";
+      const pInfo = gameData.playerInfo?.[pUid];
+      const pName =
+        (typeof p === "object"
+          ? p?.displayName || p?.username || p?.name
+          : undefined) ||
+        pInfo?.name ||
+        (pUid === userId ? auth.currentUser?.displayName || "You" : "Player");
+      const pGrad =
+        typeof p === "object" && p?.avatarGradientIndex !== undefined
+          ? p.avatarGradientIndex
+          : pInfo?.avatarGradientIndex;
+
+      return {
+        uid: pUid,
+        displayName: pName,
+        points: gameData.scores
+          ? (gameData.scores[pUid] ??
+            (typeof p === "object" ? p?.points : 0) ??
+            0)
+          : ((typeof p === "object" ? p?.points : 0) ?? 0),
+        avatar: typeof p === "object" ? p?.avatar || null : null,
+        avatarGradientIndex: pGrad,
+      };
+    });
+
+    if (resolved.length === 0 && userId) {
+      resolved.push({
+        uid: userId,
+        displayName: auth.currentUser?.displayName || "Player",
+        points: gameData.scores?.[userId] ?? 0,
+        avatar: null,
+        avatarGradientIndex: undefined,
+      });
+    }
 
     resolved.sort((a: any, b: any) => (b.points || 0) - (a.points || 0));
     setPlayersList(resolved);
-  }, [gameData?.players, gameData?.scores]);
+  }, [gameData?.players, gameData?.scores, gameData?.playerInfo, userId]);
 
   // Generate candidate words for drawer during the selection phase
   useEffect(() => {
@@ -664,6 +769,7 @@ export default function GameRoom() {
     gameData?.round,
     gameData?.roundEndTimestamp,
     userId,
+    refreshKey,
   ]);
 
   // Countdown based on authoritative server gameData.roundEndTimestamp + clock offset
@@ -778,7 +884,7 @@ export default function GameRoom() {
 
     socket.emit(
       "game:start",
-      { roomId, userId },
+      { roomId, userId, uid: userId },
       (res: { ok: boolean; error?: string }) => {
         if (!res?.ok && res?.error) {
           showToast({ message: res.error, type: "info" });
@@ -793,6 +899,7 @@ export default function GameRoom() {
     socket.emit("game:selectWord", {
       roomId,
       userId,
+      uid: userId,
       word: selectedWord,
     });
   };
@@ -818,7 +925,7 @@ export default function GameRoom() {
     );
   }
 
-  const isDrawer = gameData?.currentDrawer === userId;
+  const isDrawer = Boolean(userId && gameData?.currentDrawer === userId);
   const hasGuessed = gameData?.guessed?.includes(userId || "");
   const secretWord = gameData?.word ?? "";
 
@@ -1082,7 +1189,7 @@ export default function GameRoom() {
                 isDrawer={isDrawer}
                 currentWord={gameData?.word || ""}
                 currentUser={{
-                  uid: auth.currentUser?.uid || "anon",
+                  uid: userId || auth.currentUser?.uid || "anon",
                   displayName:
                     playersList.find((p) => p.uid === userId)?.displayName ||
                     auth.currentUser?.displayName ||

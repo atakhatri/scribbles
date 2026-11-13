@@ -49,7 +49,8 @@ const AVATAR_GRADIENTS = GRADIENTS; // Reuse the same gradients for avatars
 const MIN_FRIENDS_HEIGHT = 80;
 const MAX_FRIENDS_HEIGHT = 500;
 
-const getAvatarGradient = (uid: string) => {
+const getAvatarGradient = (uid?: string) => {
+  if (!uid || typeof uid !== "string") return AVATAR_GRADIENTS[0];
   let hash = 0;
   for (let i = 0; i < uid.length; i++) {
     hash = uid.charCodeAt(i) + ((hash << 5) - hash);
@@ -117,6 +118,8 @@ export default function Index() {
   const [createRoomModalVisible, setCreateRoomModalVisible] = useState(false);
   const [isFriendsExpanded, setIsFriendsExpanded] = useState(false);
   const [isGuestLoading, setIsGuestLoading] = useState(false);
+  const [guestModalVisible, setGuestModalVisible] = useState(false);
+  const [guestNickname, setGuestNickname] = useState("");
 
   // Animation State
   const [showJoin, setShowJoin] = useState(true);
@@ -449,7 +452,8 @@ export default function Index() {
     if (!activeGameId || !socket) return;
 
     const handleRoomState = (data: any) => {
-      if (!data || data.id !== activeGameId) return;
+      const incomingId = data?.id || data?.roomId;
+      if (!data || incomingId !== activeGameId) return;
 
       setActiveGameHostId(data.hostId || null);
 
@@ -464,11 +468,23 @@ export default function Index() {
 
       if (Array.isArray(data.players)) {
         setActiveGamePlayers(
-          data.players.map((p: any) => ({
-            id: p.uid,
-            username: p.displayName || "Player",
-            avatarGradientIndex: p.avatarGradientIndex,
-          })),
+          data.players.filter(Boolean).map((p: any) => {
+            const pUid = typeof p === "string" ? p : p?.uid || p?.id || "anon";
+            const pInfo = data.playerInfo?.[pUid];
+            return {
+              id: pUid,
+              username:
+                (typeof p === "object"
+                  ? p?.displayName || p?.username || p?.name
+                  : undefined) ||
+                pInfo?.name ||
+                "Player",
+              avatarGradientIndex:
+                typeof p === "object" && p?.avatarGradientIndex !== undefined
+                  ? p.avatarGradientIndex
+                  : pInfo?.avatarGradientIndex,
+            };
+          }),
         );
       }
 
@@ -543,15 +559,24 @@ export default function Index() {
       const targetRoomId = gameInvite.roomId;
       setGameInvite(null);
 
+      const playerName = username || user.displayName || "Player";
+      const gradIdx =
+        avatarGradientIndex >= 0 ? avatarGradientIndex : undefined;
+
       socket.emit(
         "room:join",
         {
           roomId: targetRoomId,
+          uid: user.uid,
+          userId: user.uid,
+          name: playerName,
+          displayName: playerName,
+          avatarGradientIndex: gradIdx,
           user: {
             uid: user.uid,
-            displayName: username || user.displayName || "Player",
-            avatarGradientIndex:
-              avatarGradientIndex >= 0 ? avatarGradientIndex : undefined,
+            name: playerName,
+            displayName: playerName,
+            avatarGradientIndex: gradIdx,
           },
         },
         (res: { ok: boolean; state?: any; error?: string }) => {
@@ -563,16 +588,43 @@ export default function Index() {
             return;
           }
 
-          if (res.state.lobbyEnteredAt || res.state.status === "playing") {
+          if (
+            res.state.lobbyEnteredAt ||
+            res.state.enterImmediately ||
+            res.state.status === "playing"
+          ) {
             router.push(`/game/${targetRoomId}`);
           } else {
-            setActiveGameHostId(res.state.hostId);
+            setActiveGameHostId(res.state.hostId || user.uid);
+            const rawPlayers = (res.state.players || []).filter(Boolean);
+            const mappedPlayers = rawPlayers.map((p: any) => {
+              const pUid =
+                typeof p === "string" ? p : p?.uid || p?.id || user.uid;
+              const pInfo = res.state.playerInfo?.[pUid];
+              return {
+                id: pUid,
+                username:
+                  (typeof p === "object"
+                    ? p?.displayName || p?.username || p?.name
+                    : undefined) ||
+                  pInfo?.name ||
+                  (pUid === user.uid ? playerName : "Player"),
+                avatarGradientIndex:
+                  typeof p === "object" && p?.avatarGradientIndex !== undefined
+                    ? p.avatarGradientIndex
+                    : pInfo?.avatarGradientIndex,
+              };
+            });
             setActiveGamePlayers(
-              (res.state.players || []).map((p: any) => ({
-                id: p.uid,
-                username: p.displayName || "Player",
-                avatarGradientIndex: p.avatarGradientIndex,
-              })),
+              mappedPlayers.length > 0
+                ? mappedPlayers
+                : [
+                    {
+                      id: user.uid,
+                      username: playerName,
+                      avatarGradientIndex: gradIdx,
+                    },
+                  ],
             );
             if (res.state.maxRounds) setSelectedRounds(res.state.maxRounds);
             setActiveGameId(targetRoomId);
@@ -639,34 +691,42 @@ export default function Index() {
 
       let gameId = activeGameId;
       if (!gameId) {
+        const playerName = username || user.displayName || "Player";
+        const gradIdx =
+          avatarGradientIndex >= 0 ? avatarGradientIndex : undefined;
+
         gameId = await new Promise<string | null>((resolve) => {
           socket.emit(
             "room:create",
             {
+              uid: user.uid,
+              userId: user.uid,
+              name: playerName,
+              displayName: playerName,
+              avatarGradientIndex: gradIdx,
               user: {
                 uid: user.uid,
-                displayName: username || user.displayName || "Player",
-                avatarGradientIndex:
-                  avatarGradientIndex >= 0 ? avatarGradientIndex : undefined,
+                name: playerName,
+                displayName: playerName,
+                avatarGradientIndex: gradIdx,
               },
               maxRounds: selectedRounds,
               enterImmediately: false,
             },
-            (res: { ok: boolean; roomId?: string }) => {
-              if (res?.ok && res.roomId) {
+            (res: { ok: boolean; roomId?: string; state?: any }) => {
+              const createdRoomId =
+                res?.roomId || res?.state?.id || res?.state?.roomId;
+              if (res?.ok && createdRoomId) {
                 setActiveGameHostId(user.uid);
                 setActiveGamePlayers([
                   {
                     id: user.uid,
-                    username: username || user.displayName || "Player",
-                    avatarGradientIndex:
-                      avatarGradientIndex >= 0
-                        ? avatarGradientIndex
-                        : undefined,
+                    username: playerName,
+                    avatarGradientIndex: gradIdx,
                   },
                 ]);
-                setActiveGameId(res.roomId);
-                resolve(res.roomId);
+                setActiveGameId(createdRoomId);
+                resolve(createdRoomId);
               } else {
                 resolve(null);
               }
@@ -730,6 +790,7 @@ export default function Index() {
             socket?.emit("room:cancel", {
               roomId: activeGameId,
               userId: user.uid,
+              uid: user.uid,
             });
             setActiveGameId(null);
             setActiveGamePlayers([]);
@@ -761,6 +822,7 @@ export default function Index() {
             socket?.emit("room:leave", {
               roomId: activeGameId,
               userId: user.uid,
+              uid: user.uid,
               withMessage: true,
             });
             setActiveGameId(null);
@@ -783,6 +845,11 @@ export default function Index() {
     socket?.emit("room:enterLobbyForAll", {
       roomId: activeGameId,
       userId: user.uid,
+      uid: user.uid,
+    });
+    socket?.emit("room:enter_lobby", {
+      roomId: activeGameId,
+      uid: user.uid,
     });
   };
 
@@ -794,6 +861,12 @@ export default function Index() {
     socket?.emit("room:updateRounds", {
       roomId: activeGameId,
       userId: user.uid,
+      uid: user.uid,
+      maxRounds: newRounds,
+    });
+    socket?.emit("room:update_rounds", {
+      roomId: activeGameId,
+      uid: user.uid,
       maxRounds: newRounds,
     });
   };
@@ -963,22 +1036,32 @@ export default function Index() {
       return;
     }
 
+    const playerName = username || user.displayName || "Player";
+    const gradIdx = avatarGradientIndex >= 0 ? avatarGradientIndex : undefined;
+
     socket.emit(
       "room:create",
       {
+        uid: user.uid,
+        userId: user.uid,
+        name: playerName,
+        displayName: playerName,
+        avatarGradientIndex: gradIdx,
         user: {
           uid: user.uid,
-          displayName: username || user.displayName || "Player",
-          avatarGradientIndex:
-            avatarGradientIndex >= 0 ? avatarGradientIndex : undefined,
+          name: playerName,
+          displayName: playerName,
+          avatarGradientIndex: gradIdx,
         },
         maxRounds: roundsToPlay,
         enterImmediately: true,
       },
-      (res: { ok: boolean; roomId?: string; error?: string }) => {
-        if (res?.ok && res.roomId) {
+      (res: { ok: boolean; roomId?: string; state?: any; error?: string }) => {
+        const createdRoomId =
+          res?.roomId || res?.state?.id || res?.state?.roomId;
+        if (res?.ok && createdRoomId) {
           setCreateRoomModalVisible(false);
-          router.push(`/game/${res.roomId}`);
+          router.push(`/game/${createdRoomId}`);
         } else {
           showToast({
             message: res?.error || "Failed to create game room",
@@ -1000,6 +1083,11 @@ export default function Index() {
       return;
     }
 
+    if (!user) {
+      showToast({ message: "Please log in first", type: "error" });
+      return;
+    }
+
     if (!socket || !isConnected) {
       showToast({
         message: "Connecting to game server... Please try again.",
@@ -1009,21 +1097,52 @@ export default function Index() {
     }
 
     const code = roomCode.trim().toUpperCase();
+    const playerName = username || user.displayName || "Player";
+    const gradIdx = avatarGradientIndex >= 0 ? avatarGradientIndex : undefined;
+
     socket.emit(
-      "room:check",
-      { roomId: code },
-      (res: { exists: boolean }) => {
-        if (!res?.exists) {
-          showToast({ message: "Room not found", type: "error" });
+      "room:join",
+      {
+        roomId: code,
+        uid: user.uid,
+        userId: user.uid,
+        name: playerName,
+        displayName: playerName,
+        avatarGradientIndex: gradIdx,
+        user: {
+          uid: user.uid,
+          name: playerName,
+          displayName: playerName,
+          avatarGradientIndex: gradIdx,
+        },
+      },
+      (res: { ok: boolean; state?: any; error?: string }) => {
+        if (!res?.ok || !res.state) {
+          showToast({
+            message: res?.error || "Room not found",
+            type: "error",
+          });
           return;
         }
-
         router.push(`/game/${code}`);
       },
     );
   };
 
-  const handleGuestLogin = async () => {
+  const handleGuestLogin = async (customName?: string) => {
+    const trimmedName = (customName ?? guestNickname).trim();
+    if (!trimmedName) {
+      showToast({ message: "Please enter a nickname first", type: "error" });
+      return;
+    }
+    if (trimmedName.length < 2) {
+      showToast({
+        message: "Nickname must be at least 2 characters",
+        type: "error",
+      });
+      return;
+    }
+
     setIsGuestLoading(true);
     try {
       console.log("Starting guest login...");
@@ -1033,11 +1152,14 @@ export default function Index() {
         setTimeout(() => reject(new Error("Guest login timeout")), 15000),
       );
 
-      const loginPromise = signInAsGuest();
+      const loginPromise = signInAsGuest(trimmedName);
 
       await Promise.race([loginPromise, timeoutPromise]);
 
       console.log("Guest login successful");
+      setUsername(trimmedName);
+      setGuestModalVisible(false);
+      setGuestNickname("");
 
       // Give Firebase extra time to settle and replicate the document
       console.log("Waiting for Firebase to settle...");
@@ -1589,7 +1711,7 @@ export default function Index() {
               style={[styles.buttonGuest, { marginTop: 15 }]}
               onPress={() => {
                 playSound(require("../assets/sounds/click.mp3"));
-                handleGuestLogin();
+                setGuestModalVisible(true);
               }}
               disabled={isGuestLoading}
             >
@@ -1601,6 +1723,71 @@ export default function Index() {
             </TouchableOpacity>
           </View>
         </View>
+
+        {/* Guest Nickname Modal */}
+        <Modal
+          visible={guestModalVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setGuestModalVisible(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalContent}>
+              <View style={styles.modalTape} />
+              <Text style={styles.modalTitle}>Play as Guest</Text>
+              <Text style={styles.modalSubtitle}>
+                Enter a nickname to get started
+              </Text>
+              <View style={{ width: "100%", marginBottom: 20 }}>
+                <TextInput
+                  style={[
+                    styles.input,
+                    {
+                      flex: 0,
+                      width: "100%",
+                      borderRadius: 8,
+                      borderWidth: 2,
+                      borderColor: "#333",
+                      textAlign: "center",
+                    },
+                  ]}
+                  placeholder="Your Nickname"
+                  placeholderTextColor="#777"
+                  value={guestNickname}
+                  onChangeText={setGuestNickname}
+                  maxLength={16}
+                  autoFocus
+                />
+              </View>
+              <View style={styles.modalButtons}>
+                <TouchableOpacity
+                  onPress={() => {
+                    setGuestModalVisible(false);
+                    playSound(require("../assets/sounds/click.mp3"));
+                  }}
+                  style={styles.cancelBtn}
+                  disabled={isGuestLoading}
+                >
+                  <Text style={styles.cancelText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => {
+                    playSound(require("../assets/sounds/click.mp3"));
+                    handleGuestLogin(guestNickname);
+                  }}
+                  style={styles.confirmBtn}
+                  disabled={isGuestLoading}
+                >
+                  {isGuestLoading ? (
+                    <ActivityIndicator size="small" color="#333" />
+                  ) : (
+                    <Text style={styles.confirmText}>Continue</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
       </View>
     </ImageBackground>
   );

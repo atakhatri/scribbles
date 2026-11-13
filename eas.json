@@ -4,21 +4,30 @@
     "appVersionSource": "remote"
   },
   "build": {
-    "preview": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
       "env": {
-        "npm_config_legacy_peer_deps": "true"
-      },
-      "android": {
-        "buildType": "apk"
+        "EXPO_PUBLIC_SOCKET_URL": "https://scribbles-socket-server.onrender.com"
+      }
+    },
+    "preview": {
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_SOCKET_URL": "https://scribbles-socket-server.onrender.com"
       }
     },
     "production": {
+      "autoIncrement": true,
       "env": {
-        "npm_config_legacy_peer_deps": "true"
+        "EXPO_PUBLIC_SOCKET_URL": "https://scribbles-socket-server.onrender.com"
       },
       "android": {
         "buildType": "apk"
       }
     }
+  },
+  "submit": {
+    "production": {}
   }
 }
