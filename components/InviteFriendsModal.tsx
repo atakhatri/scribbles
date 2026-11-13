@@ -34,6 +34,7 @@ export default function InviteFriendsModal({
   roomId: string;
 }) {
   const [friends, setFriends] = useState<any[]>([]);
+  const [myUsername, setMyUsername] = useState<string>("A player");
   const { showToast, playSound } = useToast();
   const [invitedIds, setInviteIds] = useState<string[]>([]);
 
@@ -57,6 +58,16 @@ export default function InviteFriendsModal({
         let meDoc = await db.collection("users").doc(me.uid).get();
         if (!meDoc.exists) {
           meDoc = await db.collection("guestUsers").doc(me.uid).get();
+        }
+
+        if (meDoc.exists && mounted) {
+          const meData = meDoc.data();
+          setMyUsername(
+            meData?.username ||
+              meData?.displayName ||
+              me.displayName ||
+              "A player",
+          );
         }
 
         const fIds: string[] = meDoc.exists ? meDoc.data()?.friends || [] : [];
@@ -101,10 +112,11 @@ export default function InviteFriendsModal({
     if (invitedIds.includes(targetId)) return;
     try {
       playSound(require("../assets/sounds/lock.mp3"));
-      const inviterName = auth.currentUser?.displayName || "A player";
+      const inviterName =
+        myUsername || auth.currentUser?.displayName || "A player";
 
       // Determine target collection
-      let targetDoc = await db.collection("users").doc(targetId).get();
+      const targetDoc = await db.collection("users").doc(targetId).get();
       const targetCollection = targetDoc.exists ? "users" : "guestUsers";
 
       await db
@@ -114,6 +126,7 @@ export default function InviteFriendsModal({
           gameInvites: firestore.FieldValue.arrayUnion({
             roomId,
             inviterName,
+            inviterId: auth.currentUser?.uid,
             timestamp: Date.now(),
           }),
         });

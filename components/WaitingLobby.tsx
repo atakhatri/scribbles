@@ -11,7 +11,7 @@ import {
   View,
 } from "react-native";
 import { useToast } from "../context/ToastContext";
-import { auth, db, firestore } from "../firebaseConfig";
+import { auth } from "../firebaseConfig";
 import InviteFriendsModal from "./InviteFriendsModal";
 
 const AVATAR_GRADIENTS = GRADIENTS;
@@ -35,7 +35,7 @@ export default function WaitingLobby({
 }: {
   visible: boolean;
   onClose: () => void; // hide
-  onLeave?: () => void; // leave and navigate
+  onLeave?: () => void; // leave via WebSocket and navigate home
   roomId: string;
   players: any[];
   hostId?: string;
@@ -45,7 +45,7 @@ export default function WaitingLobby({
   const { playSound, showAlert } = useToast();
   const me = auth.currentUser;
 
-  const leaveRoom = async () => {
+  const leaveRoom = () => {
     showAlert({
       title: "Leave Lobby",
       message: "Do you want to leave this lobby?",
@@ -60,19 +60,8 @@ export default function WaitingLobby({
         {
           text: "Leave",
           style: "destructive",
-          onPress: async () => {
+          onPress: () => {
             playSound(require("../assets/sounds/decline.mp3"));
-            try {
-              if (!me) return;
-              await db
-                .collection("games")
-                .doc(roomId)
-                .update({
-                  players: firestore.FieldValue.arrayRemove(me.uid),
-                });
-            } catch (e) {
-              console.error("Failed to leave room", e);
-            }
             if (onLeave) onLeave();
             else onClose();
           },

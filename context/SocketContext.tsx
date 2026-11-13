@@ -6,28 +6,32 @@ import { io, Socket } from "socket.io-client";
 interface SocketContextType {
   socket: Socket | null;
   isConnected: boolean;
+  serverUrl: string;
 }
 
 const SocketContext = createContext<SocketContextType>({
   socket: null,
   isConnected: false,
+  serverUrl: "",
 });
 
-// Automatically resolves your computer's LAN IP when running in Expo Go / Dev Client
 const getSocketServerUrl = (): string => {
+  // 1. Always prioritize a deployed production WebSocket URL if set in .env or EAS
   if (process.env.EXPO_PUBLIC_SOCKET_URL) {
-    return process.env.EXPO_PUBLIC_SOCKET_URL;
+    return process.env.EXPO_PUBLIC_SOCKET_URL.trim();
   }
 
-  // Extract the LAN IP from Expo's bundler hostUri (e.g., "192.168.1.5:8081")
-  const hostUri = Constants.expoConfig?.hostUri;
+  // 2. Fallback: Auto-detect computer's LAN IP from Expo Metro bundler during local dev
+  const hostUri =
+    Constants.expoConfig?.hostUri ||
+    (Constants as any).manifest2?.extra?.expoClient?.hostUri;
+
   if (hostUri) {
     const lanIp = hostUri.split(":")[0];
-    if (lanIp) {
-      return `http://${lanIp}:3001`;
-    }
+    return `http://${lanIp}:3001`;
   }
 
+  // 3. Emulator fallbacks
   if (Platform.OS === "android") {
     return "http://10.0.2.2:3001";
   }
@@ -40,43 +44,39 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({
 }) => {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
+  const serverUrl = getSocketServerUrl();
 
   useEffect(() => {
-    const serverUrl = getSocketServerUrl();
-    console.log("[SocketContext] Connecting to:", serverUrl);
-
-    const socketInstance = io(serverUrl, {
+    const newSocket = io(serverUrl, {
       transports: ["websocket"],
       reconnection: true,
       reconnectionAttempts: Infinity,
       reconnectionDelay: 1000,
     });
 
-    setSocket(socketInstance);
-
-    socketInstance.on("connect", () => {
-      console.log("[SocketContext] Connected:", socketInstance.id);
+    newSocket.on("connect", () => {
+      console.log(`✅ Connected to Scribbles Socket Server (${serverUrl})`);
       setIsConnected(true);
     });
 
-    socketInstance.on("disconnect", (reason) => {
-      console.log("[SocketContext] Disconnected:", reason);
+    newSocket.on("disconnect", () => {
+      console.log("⚠️ Disconnected from Scribbles Socket Server");
       setIsConnected(false);
     });
 
-    socketInstance.on("connect_error", (err) => {
-      if (__DEV__) {
-        console.log("[SocketContext] Connection error:", err.message);
-      }
+    newSocket.on("connect_error", (err) => {
+      console.log("Socket connect_error:", err.message);
     });
 
+    setSocket(newSocket);
+
     return () => {
-      socketInstance.disconnect();
+      newSocket.disconnect();
     };
-  }, []);
+  }, [serverUrl]);
 
   return (
-    <SocketContext.Provider value={{ socket, isConnected }}>
+    <SocketContext.Provider value={{ socket, isConnected, serverUrl }}>
       {children}
     </SocketContext.Provider>
   );
