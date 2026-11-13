@@ -18,7 +18,7 @@ interface Point {
   y: number;
 }
 
-interface Stroke {
+export interface Stroke {
   path: string; // The SVG path string (d attribute)
   color: string;
   width: number;
@@ -29,7 +29,9 @@ interface DrawingCanvasProps {
   color: string;
   strokeWidth: number;
   enabled: boolean;
-  strokes: Stroke[]; // External strokes (from DB)
+  strokes: Stroke[]; // Committed strokes from server
+  liveStroke?: Stroke | null; // Live in-progress stroke from drawer over WebSocket
+  onLiveStroke?: (liveStroke: Stroke | null) => void;
   onStrokeFinished: (newStroke: Stroke) => void;
 }
 
@@ -37,12 +39,14 @@ export default function DrawingCanvas({
   color,
   strokeWidth,
   enabled,
-  strokes, // These are the committed strokes from the game state
+  strokes,
+  liveStroke = null,
+  onLiveStroke,
   onStrokeFinished,
 }: DrawingCanvasProps) {
   const [currentPoints, setCurrentPoints] = useState<Point[]>([]);
   const pointsRef = useRef<Point[]>([]);
-  const currentPathRef = useRef<string>(""); // Ref to keep track of current path string for optimization
+  const lastLiveEmitRef = useRef<number>(0);
 
   // --- SMOOTHING ALGORITHM ---
   // Converts raw points into a smooth SVG Path using Quadratic Bezier curves
@@ -71,7 +75,7 @@ export default function DrawingCanvas({
     return d;
   };
 
-  // Recreate PanResponder when `enabled` or color/width/onStrokeFinished change
+  // Recreate PanResponder when `enabled` or color/width/callbacks change
   const panResponder = useMemo(
     () =>
       PanResponder.create({
@@ -82,6 +86,12 @@ export default function DrawingCanvas({
           const startPoint = { x: locationX, y: locationY };
           pointsRef.current = [startPoint];
           setCurrentPoints([startPoint]);
+
+          if (onLiveStroke) {
+            const d = pointsToSvg([startPoint]);
+            onLiveStroke({ path: d, color, width: strokeWidth });
+            lastLiveEmitRef.current = Date.now();
+          }
         },
         onPanResponderMove: (evt: GestureResponderEvent) => {
           const { locationX, locationY } = evt.nativeEvent;
@@ -95,7 +105,16 @@ export default function DrawingCanvas({
           );
           if (dist > 2) {
             pointsRef.current.push({ x: locationX, y: locationY });
-            setCurrentPoints([...pointsRef.current]);
+            const nextPoints = [...pointsRef.current];
+            setCurrentPoints(nextPoints);
+
+            // Throttle live WebSocket stroke emission to ~25fps (every 40ms)
+            const now = Date.now();
+            if (onLiveStroke && now - lastLiveEmitRef.current >= 40) {
+              lastLiveEmitRef.current = now;
+              const d = pointsToSvg(nextPoints);
+              onLiveStroke({ path: d, color, width: strokeWidth });
+            }
           }
         },
         onPanResponderRelease: () => {
@@ -105,20 +124,30 @@ export default function DrawingCanvas({
             const newStroke: Stroke = { path: d, color, width: strokeWidth };
             onStrokeFinished(newStroke);
           }
+          if (onLiveStroke) {
+            onLiveStroke(null);
+          }
+          pointsRef.current = [];
+          setCurrentPoints([]);
+        },
+        onPanResponderTerminate: () => {
+          if (onLiveStroke) {
+            onLiveStroke(null);
+          }
           pointsRef.current = [];
           setCurrentPoints([]);
         },
       }),
-    [enabled, color, strokeWidth, onStrokeFinished],
+    [enabled, color, strokeWidth, onLiveStroke, onStrokeFinished],
   );
 
-  // Calculate current path string for rendering the "live" line
+  // Calculate current path string for rendering the drawer's own "live" line
   const currentPathSvg = pointsToSvg(currentPoints);
 
   return (
     <View style={styles.container} {...panResponder.panHandlers}>
       <Svg style={StyleSheet.absoluteFill}>
-        {/* 1. Render Commited Strokes (from DB/History) */}
+        {/* 1. Render Committed Strokes (from Server History) */}
         {strokes.map((stroke, index) => {
           if (stroke.fill) {
             return (
@@ -146,7 +175,20 @@ export default function DrawingCanvas({
           );
         })}
 
-        {/* 2. Render Current "Live" Stroke */}
+        {/* 2. Render Remote "Live" Stroke (for Guessers watching the Drawer in real-time) */}
+        {!enabled && liveStroke && liveStroke.path ? (
+          <Path
+            d={liveStroke.path}
+            stroke={liveStroke.color}
+            strokeWidth={liveStroke.width}
+            fill="none"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            opacity={0.85}
+          />
+        ) : null}
+
+        {/* 3. Render Local Drawer's Current "Live" Stroke */}
         {currentPoints.length > 0 && (
           <Path
             d={currentPathSvg}
@@ -155,7 +197,7 @@ export default function DrawingCanvas({
             fill="none"
             strokeLinecap="round"
             strokeLinejoin="round"
-            opacity={0.8} // Slightly transparent while drawing
+            opacity={0.8}
           />
         )}
       </Svg>

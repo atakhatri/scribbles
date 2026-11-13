@@ -1,7 +1,8 @@
 import AnimatedPreloader from "@/components/animatedPreloader";
+import { SocketProvider } from "@/context/SocketContext";
 import { FirebaseAuthTypes } from "@react-native-firebase/auth";
 import { Stack, useRouter, useSegments } from "expo-router";
-import { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Animated, AppState, StyleSheet, View } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { ToastProvider } from "../context/ToastContext";
@@ -132,29 +133,31 @@ export default function RootLayout() {
   }, [user]);
 
   return (
-    <ToastProvider>
-      <SafeAreaProvider>
-        <View style={{ flex: 1 }}>
-          <Stack screenOptions={{ headerShown: false }}>
-            <Stack.Screen name="index" />
-            <Stack.Screen name="auth/login" />
-            <Stack.Screen name="auth/register" />
-            <Stack.Screen name="pages/profile" />
-            <Stack.Screen name="pages/friends" />
-            <Stack.Screen name="game/[id]" />
-          </Stack>
-          {splashMounted && (
-            <Animated.View
-              style={[
-                StyleSheet.absoluteFill,
-                { opacity: fadeAnim, zIndex: 9999, backgroundColor: "#fff" },
-              ]}
-            >
-              <AnimatedPreloader />
-            </Animated.View>
-          )}
-        </View>
-      </SafeAreaProvider>
-    </ToastProvider>
+    <SocketProvider>
+      <ToastProvider>
+        <SafeAreaProvider>
+          <View style={{ flex: 1 }}>
+            <Stack screenOptions={{ headerShown: false }}>
+              <Stack.Screen name="index" />
+              <Stack.Screen name="auth/login" />
+              <Stack.Screen name="auth/register" />
+              <Stack.Screen name="pages/profile" />
+              <Stack.Screen name="pages/friends" />
+              <Stack.Screen name="game/[id]" />
+            </Stack>
+            {splashMounted && (
+              <Animated.View
+                style={[
+                  StyleSheet.absoluteFill,
+                  { opacity: fadeAnim, zIndex: 9999, backgroundColor: "#fff" },
+                ]}
+              >
+                <AnimatedPreloader />
+              </Animated.View>
+            )}
+          </View>
+        </SafeAreaProvider>
+      </ToastProvider>
+    </SocketProvider>
   );
 }

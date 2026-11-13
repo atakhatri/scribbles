@@ -1,7 +1,6 @@
 import Preloader from "@/components/preloader";
 import GRADIENTS from "@/data/gradients";
 import { Ionicons } from "@expo/vector-icons";
-import database from "@react-native-firebase/database";
 import * as Clipboard from "expo-clipboard";
 import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -18,45 +17,36 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import ChatWindow from "../../components/ChatWindow";
-import DrawingCanvas from "../../components/DrawingCanvas";
+import ChatWindow, { ChatMessage } from "../../components/ChatWindow";
+import DrawingCanvas, { Stroke } from "../../components/DrawingCanvas";
 import DrawingTools from "../../components/DrawingTools";
 import InviteFriendsModal from "../../components/InviteFriendsModal";
 import Podium from "../../components/Podium";
 import WaitingLobby from "../../components/WaitingLobby";
 import { WORDS_POOL } from "../../components/words";
+import { useSocket } from "../../context/SocketContext";
 import { useToast } from "../../context/ToastContext";
-import { auth, db, firestore, rtdb } from "../../firebaseConfig";
-
-// Realtime Database utilities
-const rtdbRef = (rtdbInstance: any, path: string) => rtdbInstance.ref(path);
-const onValue = (ref: any, callback: (snap: any) => void) =>
-  ref.on("value", callback);
-const onDisconnect = (ref: any) => ref.onDisconnect();
-const rtdbSet = (ref: any, value: any) => ref.set(value);
-const get = (ref: any) => ref.once("value");
-const rtdbServerTimestamp = () => database.ServerValue.TIMESTAMP;
-
-interface Stroke {
-  path: string;
-  color: string;
-  width: number;
-}
+import { auth, db, firestore } from "../../firebaseConfig";
 
 interface GameData {
+  id?: string;
   players: any[];
   currentDrawer: string;
   word: string;
+  currentWord?: string;
   strokes: Stroke[];
+  liveStroke?: Stroke | null;
   status: "waiting" | "playing" | "finished";
   hostId: string;
   round: number;
   maxRounds?: number;
   scores?: Record<string, number>;
   winner?: string;
-  guesses?: any[]; // Added guesses to interface
+  guesses?: any[];
   guessed?: string[];
-  roundEndTimestamp?: number;
+  messages?: ChatMessage[];
+  roundEndTimestamp?: number | null;
+  serverNow?: number;
 }
 
 const AVATAR_GRADIENTS = GRADIENTS;
@@ -71,17 +61,18 @@ const getAvatarGradient = (uid: string) => {
 
 export default function GameRoom() {
   const { id } = useLocalSearchParams();
+  const roomId = (id as string)?.toUpperCase();
   const router = useRouter();
-  const { showToast, showAlert, playSound } = useToast();
+  const { showToast, playSound } = useToast();
+  const { socket, isConnected } = useSocket();
   const userId = auth.currentUser?.uid;
+
   const [gameData, setGameData] = useState<GameData | null>(null);
+  const [liveStroke, setLiveStroke] = useState<Stroke | null>(null);
   const [loading, setLoading] = useState(true);
   const [isExiting, setIsExiting] = useState(false);
   const [currentColor, setCurrentColor] = useState("#000000");
   const [currentWidth, setCurrentWidth] = useState(3);
-
-  // Ref to prevent overlapping updates
-  const isUpdating = useRef(false);
 
   const [showPlayersMenu, setShowPlayersMenu] = useState(false);
   const [playersList, setPlayersList] = useState<any[]>([]);
@@ -91,7 +82,7 @@ export default function GameRoom() {
   const [showDrawingTools, setShowDrawingTools] = useState(false);
   const [isDrawing, setIsDrawing] = useState(false);
 
-  // Stats update state
+  // Stats update state (persisted to Firestore on game finish)
   const [hasUpdatedStats, setHasUpdatedStats] = useState(false);
   const [lastStatus, setLastStatus] = useState<GameData["status"] | null>(null);
 
@@ -101,157 +92,36 @@ export default function GameRoom() {
   const roundAlertOpacity = useRef(new Animated.Value(0)).current;
   const roundAlertScale = useRef(new Animated.Value(0.5)).current;
   const lastInviteTimestamp = useRef<number>(0);
-  const [lastDrawer, setLastDrawer] = useState<string | null>(null);
   const didLeaveRoomRef = useRef(false);
-  const hasJoinedRoomRef = useRef(false);
-  const hasScheduledFinishedCleanupRef = useRef(false);
-  const lastStalePruneAtRef = useRef(0);
-  const lastPresencePruneAtRef = useRef(0);
+  const serverTimeOffsetRef = useRef<number>(0);
 
-  // Time Sync Logic
-  const timeOffsetRef = useRef(0);
-  const getServerTime = () => Date.now() + timeOffsetRef.current;
-  const logTimer = (...args: any[]) => {
-    if (__DEV__) {
-      console.log("[GameTimer]", ...args);
-    }
-  };
+  const TOTAL_ROUNDS_FALLBACK = 5;
 
-  // Helper: Determine user collection
+  // Helper: Determine user collection in Firestore (for profile info & end-of-game stats)
   const getUserCollection = async (
-    userId: string,
+    uid: string,
   ): Promise<"users" | "guestUsers"> => {
     try {
-      // Try fetching from users collection first
-      const usersDoc = await db.collection("users").doc(userId).get();
+      const usersDoc = await db.collection("users").doc(uid).get();
       if (usersDoc.exists) {
         return "users";
       }
-      // If not in users, check guestUsers
-      const guestUsersDoc = await db.collection("guestUsers").doc(userId).get();
-      return guestUsersDoc.exists ? "guestUsers" : "guestUsers"; // Default to guestUsers for new guest users
+      const guestUsersDoc = await db.collection("guestUsers").doc(uid).get();
+      return guestUsersDoc.exists ? "guestUsers" : "guestUsers";
     } catch (e) {
       console.error("Error determining user collection:", e);
-      return "guestUsers"; // Default to guestUsers on error to prevent crashes
+      return "guestUsers";
     }
   };
 
-  useEffect(() => {
-    if (!userId) return;
-    const syncTime = async () => {
-      try {
-        // Create a temporary doc in 'games' (since we have write access) to get server time
-        const syncRef = db
-          .collection("games")
-          .doc(`SYNC_${userId}_${Math.random()}`);
-        await syncRef.set({ t: firestore.FieldValue.serverTimestamp() });
-        const snap = await syncRef.get();
-        if (snap.exists) {
-          const serverTime = snap.data().t.toMillis();
-          timeOffsetRef.current = serverTime - Date.now();
-          await syncRef.delete();
-        }
-      } catch (e) {
-        console.log("Time sync failed", e);
-      }
-    };
-    syncTime();
-  }, [userId]);
-
-  const TOTAL_ROUNDS_FALLBACK = 5; // fallback rounds if none provided
-  const PRESENCE_STALE_MS = 20000; // Increased from 15s to 20s to reduce false positives
-
-  const getPresenceTimestamp = (value: any): number => {
-    if (!value) return 0;
-    if (typeof value === "number") return value;
-    if (typeof value?.toMillis === "function") return value.toMillis();
-    return 0;
-  };
-
-  const removePlayerFromGame = async (targetUserId: string) => {
-    if (!id) return;
-    const gameRef = db.collection("games").doc(id as string);
-
-    await db.runTransaction(async (tx) => {
-      const docSnap = await tx.get(gameRef);
-      if (!docSnap.exists) return;
-      const data = docSnap.data() as any;
-
-      const currentPlayers = Array.isArray(data.players) ? data.players : [];
-      const updatedPlayers = currentPlayers.filter((p: any) => {
-        const pid = typeof p === "string" ? p : p?.uid;
-        return pid !== targetUserId;
-      });
-
-      if (updatedPlayers.length === 0) {
-        tx.delete(gameRef);
-        return;
-      }
-
-      const updates: any = {
-        players: updatedPlayers,
-        [`presence.${targetUserId}`]: firestore.FieldValue.delete(),
-      };
-
-      if (data.hostId === targetUserId && updatedPlayers.length > 0) {
-        const next = updatedPlayers[0];
-        updates.hostId = typeof next === "string" ? next : next.uid;
-      }
-
-      // If current drawer leaves, rotate drawer and reset turn state
-      if (data.currentDrawer === targetUserId && data.status === "playing") {
-        const myIndex = currentPlayers.findIndex((p: any) => {
-          const pid = typeof p === "string" ? p : p?.uid;
-          return pid === targetUserId;
-        });
-        const nextIndex = myIndex >= updatedPlayers.length ? 0 : myIndex;
-        const nextPlayer = updatedPlayers[nextIndex];
-        const nextUid =
-          typeof nextPlayer === "string" ? nextPlayer : nextPlayer.uid;
-
-        updates.currentDrawer = nextUid;
-        updates.word = "";
-        updates.currentWord = "";
-        updates.strokes = [];
-        updates.guessed = [];
-        updates.roundEndTimestamp = getServerTime() + 30000;
-      }
-
-      tx.update(gameRef, updates);
+  const leaveGameRoom = (withMessage = true) => {
+    if (!roomId || !userId || didLeaveRoomRef.current) return;
+    didLeaveRoomRef.current = true;
+    socket?.emit("room:leave", {
+      roomId,
+      userId,
+      withMessage,
     });
-  };
-
-  const leaveGameRoom = async (withMessage = true) => {
-    if (!id || !userId || didLeaveRoomRef.current || !hasJoinedRoomRef.current)
-      return;
-
-    let didRemove = false;
-    let roomDeleted = false;
-    try {
-      await removePlayerFromGame(userId);
-      didRemove = true;
-      didLeaveRoomRef.current = true;
-    } catch {
-      // If room was deleted concurrently, ignore.
-      roomDeleted = true;
-    }
-
-    if (withMessage && didRemove && !roomDeleted) {
-      try {
-        await db
-          .collection("games")
-          .doc(id as string)
-          .collection("messages")
-          .add({
-            isSystem: true,
-            systemType: "leave",
-            text: `${auth.currentUser?.displayName || "A player"} left the game`,
-            timestamp: firestore.FieldValue.serverTimestamp(),
-          });
-      } catch {
-        // Ignore leave message failures.
-      }
-    }
   };
 
   // Helper function to calculate current turn within the round
@@ -293,7 +163,7 @@ export default function GameRoom() {
     };
   }, []);
 
-  // Listen for game invites (Toast only)
+  // Listen for game invites in Firestore (Toast only)
   useEffect(() => {
     if (!userId) return;
 
@@ -343,19 +213,22 @@ export default function GameRoom() {
     };
   }, [userId, showToast]);
 
-  // control lobby visibility based on game status
+  // Control lobby visibility based on game status
   useEffect(() => {
     if (gameData?.status === "waiting") setShowLobbyVisible(true);
     else setShowLobbyVisible(false);
   }, [gameData?.status]);
 
-  // Update user stats when game finishes
+  // Update user stats in Firestore when game finishes
   useEffect(() => {
     const currentStatus = gameData?.status;
     if (!currentStatus || !userId) return;
 
-    // Only update stats if we transitioned from 'playing' to 'finished'
-    // This prevents updates on re-renders or if joining an already finished game
+    // Reset stats guard if starting a new game ("Play Again")
+    if (currentStatus === "playing" && lastStatus === "finished") {
+      setHasUpdatedStats(false);
+    }
+
     if (
       lastStatus === "playing" &&
       currentStatus === "finished" &&
@@ -372,51 +245,38 @@ export default function GameRoom() {
           const maxScore = allScores.length > 0 ? Math.max(...allScores) : 0;
           const isWinner = myScore > 0 && myScore === maxScore;
 
-          // Use robust getUserCollection with retry logic
           const userCollection = await getUserCollection(userId);
           const userRef = db.collection(userCollection).doc(userId);
-
-          // Verify document exists before updating
           const userSnap = await userRef.get();
 
           if (!userSnap.exists) {
-            console.warn(
-              `User document ${userId} not found in ${userCollection}`,
+            await userRef.set(
+              {
+                totalGames: 1,
+                totalScore: myScore,
+                wins: isWinner ? 1 : 0,
+                lastMatches: [
+                  {
+                    roomId,
+                    score: myScore,
+                    won: isWinner,
+                    playedAt: Date.now(),
+                  },
+                ],
+                createdAt: Date.now(),
+              },
+              { merge: true },
             );
-            // Try to create the document with initial data
-            try {
-              await userRef.set(
-                {
-                  totalGames: 1,
-                  totalScore: myScore,
-                  wins: isWinner ? 1 : 0,
-                  lastMatches: [
-                    {
-                      roomId: id,
-                      score: myScore,
-                      won: isWinner,
-                      playedAt: Date.now(),
-                    },
-                  ],
-                  createdAt: Date.now(),
-                },
-                { merge: true },
-              );
-              console.log("Created new user stats document");
-            } catch (createError) {
-              console.error("Failed to create user stats:", createError);
-            }
             return;
           }
 
-          // Keep last 5 match summaries in user profile so history survives room deletion.
           const userData = userSnap.data();
           const currentLastMatches = Array.isArray(userData?.lastMatches)
             ? userData.lastMatches
             : [];
 
           const latestMatch = {
-            roomId: id,
+            roomId,
             score: myScore,
             won: isWinner,
             playedAt: Date.now(),
@@ -427,20 +287,16 @@ export default function GameRoom() {
             5,
           );
 
-          const updatePayload = {
+          await userRef.update({
             totalGames: firestore.FieldValue.increment(1),
             totalScore: firestore.FieldValue.increment(myScore),
             wins: isWinner
               ? firestore.FieldValue.increment(1)
               : firestore.FieldValue.increment(0),
             lastMatches: newLastMatches,
-          };
-
-          await userRef.update(updatePayload);
-          console.log("Successfully updated user stats");
+          });
         } catch (error) {
           console.error("Failed to update stats:", error);
-          // Don't crash the app, just log the error
         }
       };
       updateStats();
@@ -453,32 +309,14 @@ export default function GameRoom() {
     if (currentStatus !== lastStatus) {
       setLastStatus(currentStatus);
     }
-  }, [gameData?.status, userId, lastStatus, hasUpdatedStats]);
-
-  useEffect(() => {
-    if (!id || !userId || !gameData) return;
-    if (gameData.status !== "finished") {
-      hasScheduledFinishedCleanupRef.current = false;
-      return;
-    }
-
-    if (hasScheduledFinishedCleanupRef.current) return;
-
-    hasScheduledFinishedCleanupRef.current = true;
-    // Give clients a short window to persist stats/match history before deleting room.
-    const timeout = setTimeout(async () => {
-      try {
-        await db
-          .collection("games")
-          .doc(id as string)
-          .delete();
-      } catch {
-        // Ignore if already deleted by another action.
-      }
-    }, 12000);
-
-    return () => clearTimeout(timeout);
-  }, [id, userId, gameData?.status]);
+  }, [
+    gameData?.status,
+    userId,
+    lastStatus,
+    hasUpdatedStats,
+    roomId,
+    playSound,
+  ]);
 
   // Round change animation
   useEffect(() => {
@@ -493,20 +331,6 @@ export default function GameRoom() {
 
     if (currentRound > lastSeenRound) {
       playSound(require("../../assets/sounds/gameStart.mp3"));
-
-      if (userId === gameData.hostId) {
-        db.collection("games")
-          .doc(id as string)
-          .collection("messages")
-          .add({
-            text: `Round ${currentRound} started!`,
-            isSystem: true,
-            userName: "Game",
-            userId: "system",
-            timestamp: firestore.FieldValue.serverTimestamp(),
-          })
-          .catch((err) => console.error("Failed to send round start msg", err));
-      }
 
       if (maxRounds > 1) {
         const text =
@@ -545,50 +369,12 @@ export default function GameRoom() {
       }
       setLastSeenRound(currentRound);
     }
-  }, [gameData?.round, lastSeenRound, userId, gameData?.hostId, id]);
-
-  useEffect(() => {
-    if (!gameData || !userId) return;
-    const currentDrawer = gameData.currentDrawer;
-
-    if (lastDrawer === null) {
-      setLastDrawer(currentDrawer);
-      return;
-    }
-
-    if (currentDrawer !== lastDrawer) {
-      if (gameData.status === "playing" && userId === gameData.hostId) {
-        const drawerName =
-          playersList.find((p) => p.uid === currentDrawer)?.displayName ||
-          "A player";
-        db.collection("games")
-          .doc(id as string)
-          .collection("messages")
-          .add({
-            text: `${drawerName} is drawing!`,
-            isSystem: true,
-            userName: "Game",
-            userId: "system",
-            timestamp: firestore.FieldValue.serverTimestamp(),
-          })
-          .catch((err) => console.error("Failed to send drawer msg", err));
-      }
-      setLastDrawer(currentDrawer);
-    }
-  }, [
-    gameData?.currentDrawer,
-    lastDrawer,
-    userId,
-    gameData?.hostId,
-    playersList,
-    id,
-    gameData?.status,
-  ]);
+  }, [gameData?.round, lastSeenRound, playSound]);
 
   useEffect(() => {
     // When a new word is set (new turn starts), hide the tools by default
-    // so the drawer has to open them.
     setShowDrawingTools(false);
+    setLiveStroke(null);
   }, [gameData?.word]);
 
   // Word selection and timer
@@ -598,222 +384,153 @@ export default function GameRoom() {
   const [refreshKey, setRefreshKey] = useState(0);
   const lastPickerKeyRef = useRef<string>("");
 
+  // ---------------- WEBSOCKET ROOM JOIN & LISTENERS ----------------
   useEffect(() => {
-    if (!id) return;
+    if (!roomId || !userId || !socket) return;
 
-    const gameRef = db.collection("games").doc(id as string);
-    const unsubscribe = gameRef.onSnapshot((docSnap) => {
-      if (docSnap.exists) {
-        const data = docSnap.data() as GameData;
-        setGameData(data);
-      } else {
-        showToast({ message: "Game not found", type: "error" });
-        router.replace("/");
+    didLeaveRoomRef.current = false;
+
+    const joinViaSocket = async () => {
+      let displayName = auth.currentUser?.displayName || "Player";
+      let avatarGradientIndex: number | undefined = undefined;
+      let avatar: string | null = null;
+
+      try {
+        const col = await getUserCollection(userId);
+        const docSnap = await db.collection(col).doc(userId).get();
+        if (docSnap.exists) {
+          const d = docSnap.data();
+          displayName = d?.username || d?.displayName || displayName;
+          avatarGradientIndex = d?.avatarGradientIndex;
+          avatar = d?.avatarUrl || d?.photoURL || null;
+        }
+      } catch {}
+
+      socket.emit(
+        "room:join",
+        {
+          roomId,
+          user: {
+            uid: userId,
+            displayName,
+            avatar,
+            avatarGradientIndex,
+          },
+        },
+        (res: { ok: boolean; state?: GameData; error?: string }) => {
+          if (!res?.ok || !res.state) {
+            showToast({
+              message: res?.error || "Game not found",
+              type: "error",
+            });
+            router.replace("/");
+            return;
+          }
+          if (res.state.serverNow) {
+            serverTimeOffsetRef.current = res.state.serverNow - Date.now();
+          }
+          setGameData(res.state);
+          setLiveStroke(res.state.liveStroke || null);
+          setLoading(false);
+        },
+      );
+    };
+
+    if (isConnected) {
+      joinViaSocket();
+    }
+
+    const handleRoomState = (state: GameData) => {
+      if (state.id && state.id !== roomId) return;
+      if (state.serverNow) {
+        serverTimeOffsetRef.current = state.serverNow - Date.now();
       }
+      setGameData(state);
+      setLiveStroke(state.liveStroke || null);
       setLoading(false);
-    });
+    };
 
-    return () => unsubscribe();
-  }, [id, router, showToast]);
+    const handleStrokesUpdated = (strokes: Stroke[]) => {
+      setLiveStroke(null);
+      setGameData((prev) => (prev ? { ...prev, strokes } : prev));
+    };
 
-  // Remove player when app goes background/inactive (covers swipe-close and task switch on mobile)
+    const handleLiveStroke = (incomingStroke: Stroke | null) => {
+      setLiveStroke(incomingStroke);
+    };
+
+    const handleRoomClosed = (payload?: { reason?: string }) => {
+      showToast({
+        message: payload?.reason || "Room closed",
+        type: "info",
+      });
+      router.replace("/");
+    };
+
+    socket.on("room:state", handleRoomState);
+    socket.on("draw:strokesUpdated", handleStrokesUpdated);
+    socket.on("draw:live", handleLiveStroke);
+    socket.on("room:closed", handleRoomClosed);
+
+    return () => {
+      socket.off("room:state", handleRoomState);
+      socket.off("draw:strokesUpdated", handleStrokesUpdated);
+      socket.off("draw:live", handleLiveStroke);
+      socket.off("room:closed", handleRoomClosed);
+    };
+  }, [roomId, userId, socket, isConnected, router, showToast]);
+
+  // Leave room on unmount
   useEffect(() => {
-    if (!id || !userId) return;
+    return () => {
+      leaveGameRoom(true);
+    };
+  }, [roomId, userId, socket]);
+
+  // Remove player when app goes background/inactive on mobile
+  useEffect(() => {
+    if (!roomId || !userId) return;
 
     const sub = AppState.addEventListener("change", (nextState) => {
       if (nextState === "background" || nextState === "inactive") {
-        leaveGameRoom(false).catch(() => {});
+        leaveGameRoom(false);
       }
     });
 
     return () => sub.remove();
-  }, [id, userId]);
+  }, [roomId, userId]);
 
-  // Presence heartbeat and stale-player cleanup (handles abrupt close/network loss)
+  // Build sorted playersList directly from WebSocket room state
   useEffect(() => {
-    if (!id || !userId) return;
-    const gameRef = db.collection("games").doc(id as string);
+    if (!gameData?.players) return;
 
-    // Add jitter to prevent all clients from updating simultaneously
-    const jitter = Math.random() * 1000;
-    const heartbeatInterval = 5000 + jitter;
+    const resolved = gameData.players.map((p: any) => ({
+      uid: p.uid,
+      displayName: p.displayName || p.username || "Player",
+      points: gameData.scores
+        ? (gameData.scores[p.uid] ?? p.points ?? 0)
+        : (p.points ?? 0),
+      avatar: p.avatar || null,
+      avatarGradientIndex: p.avatarGradientIndex,
+    }));
 
-    let isHeartbeatActive = true;
-    const sendHeartbeat = async () => {
-      if (!isHeartbeatActive || didLeaveRoomRef.current) return;
-      try {
-        await gameRef.update({
-          [`presence.${userId}`]: getServerTime(),
-          lastUpdated: firestore.FieldValue.serverTimestamp(),
-        });
-      } catch (err) {
-        // Ignore transient heartbeat failures
-        if (__DEV__) {
-          console.log(
-            "[Heartbeat] Update failed (expected during concurrent writes)",
-          );
-        }
-      }
-      if (isHeartbeatActive) {
-        setTimeout(sendHeartbeat, heartbeatInterval);
-      }
-    };
+    resolved.sort((a: any, b: any) => (b.points || 0) - (a.points || 0));
+    setPlayersList(resolved);
+  }, [gameData?.players, gameData?.scores]);
 
-    // Initial heartbeat with jitter delay
-    const initialTimeout = setTimeout(sendHeartbeat, jitter);
-
-    const stalePrune = setInterval(async () => {
-      if (!gameData || gameData.status === "finished") {
-        return;
-      }
-
-      const now = getServerTime();
-      // Increase debounce to 5 seconds to reduce prune frequency
-      if (now - lastStalePruneAtRef.current < 5000) return;
-      lastStalePruneAtRef.current = now;
-
-      const presence = (gameData as any)?.presence || {};
-      const playerIds = (gameData.players || []).map((p: any) =>
-        typeof p === "string" ? p : p?.uid,
-      );
-
-      // Any active player can prune stale participants (not only host).
-      const mySeenAt = getPresenceTimestamp(presence[userId]);
-      const iAmActiveInRoom =
-        playerIds.includes(userId) &&
-        mySeenAt > 0 &&
-        now - mySeenAt <= PRESENCE_STALE_MS;
-      if (!iAmActiveInRoom) return;
-
-      const staleIds = playerIds.filter((pid: string) => {
-        if (!pid || pid === userId) return false;
-        const seenAt = getPresenceTimestamp(presence[pid]);
-        return !seenAt || now - seenAt > PRESENCE_STALE_MS;
-      });
-
-      if (staleIds.length === 0) return;
-
-      // Remove one stale player per cycle to reduce write contention.
-      try {
-        await removePlayerFromGame(staleIds[0]);
-      } catch (err) {
-        // Ignore race conditions and retry next cycle
-        if (__DEV__) {
-          console.log("[StalePrune] Remove failed (will retry):", err);
-        }
-      }
-    }, 7000); // Increased from 5000 to 7000
-
-    return () => {
-      isHeartbeatActive = false;
-      clearTimeout(initialTimeout);
-      clearInterval(stalePrune);
-    };
-  }, [id, userId, gameData]);
-
-  // Realtime presence: detects app kill/network loss immediately via server-side onDisconnect.
-  useEffect(() => {
-    if (!id || !userId) return;
-
-    const myPresenceRef = rtdbRef(rtdb, `presence/games/${id}/${userId}`);
-    const connectedRef = rtdbRef(rtdb, ".info/connected");
-
-    const unsubscribe = onValue(connectedRef, async (snap) => {
-      if (snap.val() !== true) return;
-      try {
-        await onDisconnect(myPresenceRef).set({
-          state: "offline",
-          lastChanged: rtdbServerTimestamp(),
-        });
-        await rtdbSet(myPresenceRef, {
-          state: "online",
-          lastChanged: rtdbServerTimestamp(),
-        });
-      } catch {
-        // Ignore transient presence setup failures.
-      }
-    });
-
-    return () => {
-      unsubscribe();
-      rtdbSet(myPresenceRef, {
-        state: "offline",
-        lastChanged: Date.now(),
-      }).catch(() => {});
-    };
-  }, [id, userId]);
-
-  // Remove offline users quickly based on Realtime presence state.
-  useEffect(() => {
-    if (!id || !userId) return;
-
-    const gamePresenceRef = rtdbRef(rtdb, `presence/games/${id}`);
-    const gameRef = db.collection("games").doc(id as string);
-
-    const unsubscribe = onValue(gamePresenceRef, async () => {
-      const now = Date.now();
-      // Increase debounce to 3 seconds to reduce concurrent remove operations
-      if (now - lastPresencePruneAtRef.current < 3000) return;
-      lastPresencePruneAtRef.current = now;
-
-      try {
-        const [presenceSnap, gameSnap] = await Promise.all([
-          get(gamePresenceRef),
-          gameRef.get(),
-        ]);
-
-        const presence = presenceSnap.val() || {};
-
-        if (!gameSnap.exists) return;
-
-        const game = gameSnap.data() as any;
-        if (game.status === "finished") return;
-
-        const players = Array.isArray(game.players) ? game.players : [];
-        const playerIds = players.map((p: any) =>
-          typeof p === "string" ? p : p?.uid,
-        );
-
-        const offlineIds = playerIds.filter((pid: string) => {
-          if (!pid || pid === userId) return false;
-          const status = presence[pid];
-          return status?.state === "offline";
-        });
-
-        if (offlineIds.length === 0) return;
-
-        // Remove one player at a time to minimize contention.
-        await removePlayerFromGame(offlineIds[0]);
-      } catch (err) {
-        // Ignore race conditions and transient read/write issues.
-        if (__DEV__) {
-          console.log(
-            "[PresencePrune] Remove failed (expected during concurrent writes)",
-          );
-        }
-      }
-    });
-
-    return () => unsubscribe();
-  }, [id, userId]);
-
-  // Generate candidate words for drawer during the selection phase.
-  // This is keyed by round/drawer/timer so transitions (leave/timeout/exit) don't miss picker regeneration.
+  // Generate candidate words for drawer during the selection phase
   useEffect(() => {
     const isDrawer = gameData?.currentDrawer === userId;
-    const currentWord =
-      (gameData as any)?.word ?? (gameData as any)?.currentWord;
+    const currentWord = gameData?.word || gameData?.currentWord;
     const isSelectionPhase =
       !!isDrawer && !currentWord && gameData?.status === "playing";
-    const pickerKey = `${gameData?.round ?? 0}:${gameData?.currentDrawer ?? ""}:${(gameData as any)?.roundEndTimestamp ?? 0}:${refreshKey}`;
+    const pickerKey = `${gameData?.round ?? 0}:${gameData?.currentDrawer ?? ""}:${gameData?.roundEndTimestamp ?? 0}:${refreshKey}`;
 
     const filterWord = (w: string) => {
       if (!w) return false;
       const n = w.trim();
-      // Allow letters, spaces, hyphens, apostrophes - exclude digits and special chars
       if (!/^[A-Za-z\s'-]+$/.test(n)) return false;
-      const len = n.replace(/\s+/g, "").length; // length excluding spaces
-      // Accept words between 3-15 characters (good range for drawing)
+      const len = n.replace(/\s+/g, "").length;
       return len >= 3 && len <= 15;
     };
 
@@ -829,7 +546,7 @@ export default function GameRoom() {
 
     const fetchWithTimeout = async (
       url: string,
-      timeout = 5000,
+      timeout = 4000,
     ): Promise<Response> => {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), timeout);
@@ -844,7 +561,6 @@ export default function GameRoom() {
     };
 
     const fetchRemoteWords = async () => {
-      // Strategy 1: Try Random Word API (fast, reliable)
       try {
         const resp = await fetchWithTimeout(
           "https://random-word-api.vercel.app/api?words=80",
@@ -857,13 +573,9 @@ export default function GameRoom() {
             .filter(filterWord);
 
           if (filtered.length >= 3) return filtered;
-          console.log("Random Word API returned insufficient valid words");
         }
-      } catch (e) {
-        console.log("Random Word API unavailable");
-      }
+      } catch {}
 
-      // Strategy 2: Try Datamuse API with noun filtering
       try {
         const topics = [
           "food",
@@ -892,28 +604,8 @@ export default function GameRoom() {
             .filter(filterWord);
           if (candidates.length >= 3) return candidates;
         }
-      } catch (e) {
-        console.log("Datamuse API unavailable");
-      }
+      } catch {}
 
-      // Strategy 3: Try WordsAPI alternative public endpoint
-      try {
-        const resp = await fetchWithTimeout(
-          "https://random-word-form.herokuapp.com/random/noun?count=50",
-          4000,
-        );
-        if (resp.ok) {
-          const words: string[] = await resp.json();
-          const filtered = words
-            .map((w: string) => w.toUpperCase())
-            .filter(filterWord);
-          if (filtered.length >= 3) return filtered;
-        }
-      } catch (e) {
-        console.log("Alternative word API unavailable");
-      }
-
-      // All remote sources failed - use local pool (never fails)
       return null;
     };
 
@@ -924,7 +616,6 @@ export default function GameRoom() {
       return;
     }
 
-    // Avoid re-fetching repeatedly for the same turn unless user explicitly shuffled.
     if (lastPickerKeyRef.current === pickerKey && candidateWords.length > 0) {
       return;
     }
@@ -932,43 +623,35 @@ export default function GameRoom() {
 
     let cancelled = false;
 
-    if (isSelectionPhase) {
-      (async () => {
-        const remote = await fetchRemoteWords();
-        if (remote && remote.length >= 3) {
-          if (!cancelled) setCandidateWords(pickRandom(remote, 3));
-          return;
-        }
+    (async () => {
+      const remote = await fetchRemoteWords();
+      if (remote && remote.length >= 3) {
+        if (!cancelled) setCandidateWords(pickRandom(remote, 3));
+        return;
+      }
 
-        // Fallback to local WORDS_POOL (guaranteed to work)
-        // Prefer single-word entries and varied difficulty
-        const singleWords = WORDS_POOL.filter(
-          (w) => !w.includes(" ") && w.length >= 4 && w.length <= 10,
-        ).map((w) => w.toUpperCase());
+      const singleWords = WORDS_POOL.filter(
+        (w) => !w.includes(" ") && w.length >= 4 && w.length <= 10,
+      ).map((w) => w.toUpperCase());
 
-        const mediumWords = WORDS_POOL.filter(
-          (w) => w.length >= 5 && w.length <= 8,
-        ).map((w) => w.toUpperCase());
+      const mediumWords = WORDS_POOL.filter(
+        (w) => w.length >= 5 && w.length <= 8,
+      ).map((w) => w.toUpperCase());
 
-        const allLocalWords = WORDS_POOL.map((w) => w.toUpperCase()).filter(
-          filterWord,
+      const allLocalWords = WORDS_POOL.map((w) => w.toUpperCase()).filter(
+        filterWord,
+      );
+
+      let poolToUse = singleWords;
+      if (poolToUse.length < 10) poolToUse = mediumWords;
+      if (poolToUse.length < 10) poolToUse = allLocalWords;
+
+      if (!cancelled) {
+        setCandidateWords(
+          pickRandom(poolToUse.length >= 3 ? poolToUse : WORDS_POOL.slice(), 3),
         );
-
-        // Try to get a good mix: prioritize single words, then medium length, then any
-        let poolToUse = singleWords;
-        if (poolToUse.length < 10) poolToUse = mediumWords;
-        if (poolToUse.length < 10) poolToUse = allLocalWords;
-
-        if (!cancelled) {
-          setCandidateWords(
-            pickRandom(
-              poolToUse.length >= 3 ? poolToUse : WORDS_POOL.slice(),
-              3,
-            ),
-          );
-        }
-      })();
-    }
+      }
+    })();
 
     return () => {
       cancelled = true;
@@ -976,34 +659,25 @@ export default function GameRoom() {
   }, [
     gameData?.currentDrawer,
     gameData?.word,
-    (gameData as any)?.currentWord,
+    gameData?.currentWord,
     gameData?.status,
     gameData?.round,
-    (gameData as any)?.roundEndTimestamp,
+    gameData?.roundEndTimestamp,
     userId,
-    refreshKey,
-    candidateWords.length,
   ]);
 
-  // Countdown based on gameData.roundEndTimestamp
+  // Countdown based on authoritative server gameData.roundEndTimestamp + clock offset
   useEffect(() => {
     let timer: any = null;
-    const endTs = (gameData as any)?.roundEndTimestamp;
+    const endTs = gameData?.roundEndTimestamp;
     if (endTs) {
       const update = () => {
-        const secs = Math.max(0, Math.ceil((endTs - getServerTime()) / 1000));
+        const estimatedServerNow = Date.now() + serverTimeOffsetRef.current;
+        const secs = Math.max(
+          0,
+          Math.ceil((endTs - estimatedServerNow) / 1000),
+        );
         setRemainingSeconds(secs);
-        if (__DEV__ && secs <= 3) {
-          logTimer("tick", {
-            roomId: id,
-            secs,
-            endTs,
-            now: getServerTime(),
-            drawer: gameData?.currentDrawer,
-            round: gameData?.round,
-            hasWord: !!(gameData as any)?.word,
-          });
-        }
         if (secs <= 0) clearInterval(timer);
       };
       update();
@@ -1014,293 +688,7 @@ export default function GameRoom() {
     return () => clearInterval(timer);
   }, [gameData?.round, gameData?.roundEndTimestamp]);
 
-  // When time runs out, immediately advance the turn to the next player.
-  // Use a ref to ensure we only process a given roundEndTimestamp once.
-  const timeoutProcessedRef = useRef<number | null>(null);
-  useEffect(() => {
-    if (remainingSeconds !== 0) return;
-    if (!id || !gameData) return;
-    if (gameData.status !== "playing") return;
-    const endTs = (gameData as any)?.roundEndTimestamp;
-    if (!endTs) return;
-    if (getServerTime() < endTs - 1000) return;
-
-    // Only the host should trigger the turn change to avoid race conditions/conflicts
-    if (gameData.hostId !== userId) return;
-
-    if (timeoutProcessedRef.current === endTs) return; // already processed
-    timeoutProcessedRef.current = endTs;
-    logTimer("timeout candidate", {
-      roomId: id,
-      endTs,
-      now: getServerTime(),
-      drawer: gameData.currentDrawer,
-      round: gameData.round,
-      hasWord: !!(gameData as any)?.word,
-    });
-
-    (async () => {
-      let didProcessTransition = false;
-      try {
-        const gameRef = db.collection("games").doc(id as string);
-        await db.runTransaction(async (tx) => {
-          const snap = await tx.get(gameRef);
-          if (!snap.exists) return;
-          const data = snap.data() as any;
-
-          // Process only if this is still the same active timer window.
-          if (data.status !== "playing") return;
-          if (data.roundEndTimestamp !== endTs) return;
-          if (getServerTime() < data.roundEndTimestamp - 1000) return;
-
-          // 1. Word Selection Phase Timeout
-          // If word is not selected yet, pick a random word and give time to draw.
-          if (!data.word) {
-            const pool =
-              WORDS_POOL && WORDS_POOL.length > 0
-                ? WORDS_POOL
-                : ["APPLE", "BANANA", "CAT"];
-            const randomWord =
-              pool[Math.floor(Math.random() * pool.length)].toUpperCase();
-            const drawingRoundEnd = getServerTime() + 120000; // 2 mins to draw
-            tx.update(gameRef, {
-              word: randomWord,
-              currentWord: randomWord,
-              roundEndTimestamp: drawingRoundEnd,
-              guessed: [],
-            });
-            didProcessTransition = true;
-            logTimer("word auto-selected after picker timeout", {
-              roomId: id,
-              selectedWord: randomWord,
-              drawingRoundEnd,
-              drawer: data.currentDrawer,
-              round: data.round,
-            });
-            return;
-          }
-
-          // 2. Drawing Phase Timeout (Turn End)
-          // Word was selected, but time ran out. Move to next player.
-
-          const msgRef = db
-            .collection("games")
-            .doc(id as string)
-            .collection("messages")
-            .doc();
-          tx.set(msgRef, {
-            text: "Time's up!",
-            isSystem: true,
-            userName: "Game",
-            userId: "system",
-            timestamp: firestore.FieldValue.serverTimestamp(),
-          });
-
-          const playersRaw = Array.isArray(data.players) ? data.players : [];
-          const players: string[] = playersRaw.map((p: any) =>
-            typeof p === "string" ? p : p?.uid || p,
-          );
-          const currentDrawer: string = data.currentDrawer;
-
-          // Award points to the drawer based on how many people guessed
-          const scoresObj = data.scores || {};
-          const guessedArr = Array.isArray(data.guessed)
-            ? data.guessed.filter((uid: string) => uid !== currentDrawer)
-            : [];
-          // Drawer gets points for each guesser. Since time is 0, base points only.
-          // Using the same formula logic: 5 * count
-          const drawerPoints = 5 * guessedArr.length;
-
-          if (currentDrawer && drawerPoints > 0) {
-            scoresObj[currentDrawer] =
-              (scoresObj[currentDrawer] || 0) + drawerPoints;
-          }
-
-          // Determine next drawer and whether the round should increment
-          let nextDrawer = currentDrawer;
-          let shouldIncrementRound = false;
-
-          if (players.length > 0) {
-            const foundIdx = players.findIndex((p) => p === currentDrawer);
-            // If current drawer not found (e.g. left), start from 0.
-            const idx = foundIdx >= 0 ? foundIdx : 0;
-            const nextIdx = (idx + 1) % players.length;
-            nextDrawer = players[nextIdx];
-
-            // If we wrapped around to the start (or passed it), increment round
-            if (nextIdx <= idx) shouldIncrementRound = true;
-          }
-
-          const nextRound = (data.round || 1) + (shouldIncrementRound ? 1 : 0);
-          const maxRounds = data.maxRounds || TOTAL_ROUNDS_FALLBACK;
-          const newStatus = nextRound > maxRounds ? "finished" : "playing";
-
-          // Next phase is Word Selection (30s)
-          const newRoundEnd =
-            newStatus === "playing" ? getServerTime() + 30000 : null;
-
-          const updateObj: any = {
-            scores: scoresObj,
-            strokes: [],
-            word: "",
-            currentWord: "",
-            guessed: [],
-            round: nextRound,
-            currentDrawer: nextDrawer,
-            status: newStatus,
-            roundEndTimestamp: newRoundEnd,
-            lastUpdated: firestore.FieldValue.serverTimestamp(),
-          };
-
-          tx.update(gameRef, updateObj);
-          didProcessTransition = true;
-          logTimer("turn advanced after drawing timeout", {
-            roomId: id,
-            previousDrawer: currentDrawer,
-            nextDrawer,
-            roundBefore: data.round,
-            roundAfter: nextRound,
-            statusAfter: newStatus,
-            nextEndTs: newRoundEnd,
-          });
-        });
-        if (!didProcessTransition) {
-          // Release the lock when this invocation was a no-op so the true expiry can be processed later.
-          timeoutProcessedRef.current = null;
-          logTimer("timeout no-op, released lock", {
-            roomId: id,
-            endTs,
-            now: getServerTime(),
-          });
-        }
-      } catch (e) {
-        console.error("advance on timeout failed", e);
-        timeoutProcessedRef.current = null;
-        logTimer("timeout failed, released lock", {
-          roomId: id,
-          endTs,
-          now: getServerTime(),
-        });
-      }
-    })();
-  }, [remainingSeconds, id, gameData, userId]);
-
-  // Ensure current user is added to the room players list once (on mount), and removed on unmount.
-  useEffect(() => {
-    if (!id || !userId) return;
-    const gameRef = db.collection("games").doc(id as string);
-
-    (async () => {
-      try {
-        const snap = await gameRef.get();
-        const players = snap.exists ? (snap.data() as any).players || [] : [];
-        const already = players.some((p: any) =>
-          typeof p === "string" ? p === userId : p?.uid === userId,
-        );
-        if (!already) {
-          try {
-            await gameRef.update({
-              players: firestore.FieldValue.arrayUnion(userId),
-              [`presence.${userId}`]: getServerTime(),
-            });
-          } catch (e) {
-            console.error("Failed to join room", e);
-          }
-          try {
-            const scoreObj: any = {};
-            scoreObj[`scores.${userId}`] = 0;
-            await gameRef.update(scoreObj);
-          } catch (e) {}
-          try {
-            await db
-              .collection("games")
-              .doc(id as string)
-              .collection("messages")
-              .add({
-                isSystem: true,
-                systemType: "join",
-                text: `${
-                  auth.currentUser?.displayName || "A player"
-                } joined the game`,
-                timestamp: firestore.FieldValue.serverTimestamp(),
-              });
-          } catch (e) {}
-        } else {
-          // Refresh presence on re-open/reconnect.
-          try {
-            await gameRef.update({
-              [`presence.${userId}`]: getServerTime(),
-            });
-          } catch {}
-        }
-        hasJoinedRoomRef.current = true;
-      } catch (e) {
-        console.error("join effect error", e);
-      }
-    })();
-
-    return () => {
-      leaveGameRoom(true).catch(() => {});
-    };
-  }, [id, userId]);
-
-  useEffect(() => {
-    if (!gameData) return;
-    (async () => {
-      try {
-        const promises = (gameData.players || []).map(async (p: any) => {
-          if (typeof p === "string") {
-            try {
-              // Try users collection first, then guestUsers
-              let userDocRef = db.collection("users").doc(p);
-              let userDoc = await userDocRef.get();
-              let data = userDoc.exists ? userDoc.data() : null;
-
-              if (!data) {
-                userDocRef = db.collection("guestUsers").doc(p);
-                userDoc = await userDocRef.get();
-                data = userDoc.exists ? userDoc.data() : null;
-              }
-
-              return {
-                uid: p,
-                displayName:
-                  data?.username ||
-                  data?.displayName ||
-                  (p === userId ? auth.currentUser?.displayName : undefined) ||
-                  p,
-                points: gameData.scores ? (gameData.scores[p] ?? 0) : 0,
-                avatar: data?.avatarUrl || data?.photoURL || null,
-                avatarGradientIndex: data?.avatarGradientIndex,
-              };
-            } catch (e) {
-              return {
-                uid: p,
-                displayName: p,
-                points: gameData.scores ? (gameData.scores[p] ?? 0) : 0,
-              };
-            }
-          } else {
-            return {
-              uid: p.uid,
-              displayName: p.displayName || p.username || p.uid,
-              points: gameData.scores
-                ? (gameData.scores[p.uid] ?? 0)
-                : (p.points ?? 0),
-            };
-          }
-        });
-
-        const resolved = await Promise.all(promises);
-        // sort by points desc for convenience
-        resolved.sort((a: any, b: any) => (b.points || 0) - (a.points || 0));
-        setPlayersList(resolved);
-      } catch (e) {
-        console.error("Error building players list", e);
-      }
-    })();
-  }, [gameData, userId]);
-
+  // ---------------- DRAWING & GAME ACTIONS ----------------
   const handleStrokeStart = () => {
     if (
       isDrawer &&
@@ -1311,67 +699,71 @@ export default function GameRoom() {
     }
   };
 
-  const handleStrokeFinished = async (newStroke: Stroke) => {
+  const handleLiveStroke = (stroke: Stroke | null) => {
+    if (!gameData || gameData.currentDrawer !== userId || !socket) return;
+    socket.emit("draw:live", {
+      roomId,
+      userId,
+      stroke,
+    });
+  };
+
+  const handleStrokeFinished = (newStroke: Stroke) => {
     setIsDrawing(false);
-    if (!gameData || gameData.currentDrawer !== userId || isUpdating.current)
-      return;
+    if (!gameData || gameData.currentDrawer !== userId || !socket) return;
 
-    try {
-      isUpdating.current = true;
-      const gameRef = db.collection("games").doc(id as string);
+    // Optimistically update local strokes for zero-flicker rendering
+    setGameData((prev) =>
+      prev ? { ...prev, strokes: [...(prev.strokes || []), newStroke] } : prev,
+    );
 
-      // We append ONLY the new stroke to the array.
-      await gameRef.update({
-        strokes: firestore.FieldValue.arrayUnion(newStroke),
-        lastUpdated: firestore.FieldValue.serverTimestamp(),
-      });
-    } catch (error) {
-      console.error("Error saving stroke:", error);
-    } finally {
-      isUpdating.current = false;
-    }
+    socket.emit("draw:stroke", {
+      roomId,
+      userId,
+      stroke: newStroke,
+    });
   };
 
-  const handleClearCanvas = async () => {
-    if (!gameData || gameData.currentDrawer !== userId) return;
-    try {
-      const gameRef = db.collection("games").doc(id as string);
-      await gameRef.update({
-        strokes: [], // Reset strokes
-      });
-    } catch (error) {
-      console.error("Error clearing canvas:", error);
-    }
+  const handleClearCanvas = () => {
+    if (!gameData || gameData.currentDrawer !== userId || !socket) return;
+    socket.emit("canvas:clear", { roomId, userId });
   };
 
-  const handleUndo = async () => {
-    if (!gameData || gameData.currentDrawer !== userId) return;
-    try {
-      const gameRef = db.collection("games").doc(id as string);
-      const snap = await gameRef.get();
-      if (!snap.exists) return;
-      const data = snap.data() as any;
-      const strokes = Array.isArray(data.strokes) ? data.strokes.slice() : [];
-      if (strokes.length === 0) return;
-      strokes.pop();
-      await gameRef.update({ strokes });
-    } catch (e) {
-      console.error("Undo failed", e);
-    }
+  const handleUndo = () => {
+    if (!gameData || gameData.currentDrawer !== userId || !socket) return;
+    socket.emit("canvas:undo", { roomId, userId });
+  };
+
+  const handleFillCanvas = () => {
+    if (!gameData || gameData.currentDrawer !== userId || !socket) return;
+    const fillStroke: Stroke = {
+      path: "",
+      color: currentColor,
+      width: 0,
+      fill: true,
+    };
+    setGameData((prev) =>
+      prev ? { ...prev, strokes: [...(prev.strokes || []), fillStroke] } : prev,
+    );
+    socket.emit("draw:stroke", {
+      roomId,
+      userId,
+      stroke: fillStroke,
+    });
   };
 
   const copyRoomIdToClipboard = async () => {
-    if (!id) return;
+    if (!roomId) return;
     try {
-      await Clipboard.setStringAsync(id as string);
+      await Clipboard.setStringAsync(roomId);
       showToast({ message: "Room code copied to clipboard", type: "success" });
     } catch (e) {
       console.error("Failed to copy room id", e);
     }
   };
 
-  const handleStartGame = async () => {
-    if (!gameData) return;
+  const handleStartGame = () => {
+    if (!gameData || !socket || !userId) return;
     if (gameData.hostId !== userId) {
       showToast({ message: "Only the host can start the game.", type: "info" });
       return;
@@ -1384,157 +776,35 @@ export default function GameRoom() {
       return;
     }
 
-    try {
-      const gameRef = db.collection("games").doc(id as string);
-      const firstDrawer = gameData.players[0]?.uid || gameData.players[0];
-      const roundEnd = getServerTime() + 30000; // 30s for word selection
-      timeoutProcessedRef.current = null;
-      await gameRef.update({
-        status: "playing",
-        round: 1,
-        currentDrawer: firstDrawer,
-        strokes: [],
-        guesses: [],
-        guessed: [],
-        roundEndTimestamp: roundEnd,
-        word: "",
-        currentWord: "",
-        lastUpdated: firestore.FieldValue.serverTimestamp(),
-      });
-    } catch (error) {
-      console.error("Error starting game", error);
-    }
+    socket.emit(
+      "game:start",
+      { roomId, userId },
+      (res: { ok: boolean; error?: string }) => {
+        if (!res?.ok && res?.error) {
+          showToast({ message: res.error, type: "info" });
+        }
+      },
+    );
   };
 
-  const handleCorrectGuess = async (guesserId: string) => {
-    playSound(require("../../assets/sounds/correct.mp3"));
-    if (!id) return;
-    const gameRef = db.collection("games").doc(id as string);
-
-    try {
-      await db.runTransaction(async (tx) => {
-        const snap = await tx.get(gameRef);
-        if (!snap.exists) return;
-        const data = snap.data() as any;
-
-        const playersRaw = Array.isArray(data.players) ? data.players : [];
-        const players: string[] = playersRaw.map((p: any) =>
-          typeof p === "string" ? p : p?.uid || p,
-        );
-        const currentDrawer: string = data.currentDrawer;
-
-        const guessedArr: string[] = Array.isArray(data.guessed)
-          ? data.guessed.slice()
-          : [];
-
-        // If already recorded, no-op
-        if (guessedArr.includes(guesserId)) return;
-
-        // add the new guesser
-        guessedArr.push(guesserId);
-
-        // persist guessed array
-        tx.update(gameRef, { guessed: guessedArr });
-
-        // Award points to THIS guesser immediately
-        const endTs = data.roundEndTimestamp || getServerTime();
-        const remainingSeconds = Math.max(
-          0,
-          Math.ceil((endTs - getServerTime()) / 1000),
-        );
-        const guesserPoints = 10 + remainingSeconds;
-        const scoresObj: Record<string, number> = data.scores || {};
-        scoresObj[guesserId] = (scoresObj[guesserId] || 0) + guesserPoints;
-
-        // Determine non-drawer players who need to guess
-        const nonDrawerPlayers = players.filter((p) => p !== currentDrawer);
-
-        const allGuessed = nonDrawerPlayers.every((p) =>
-          guessedArr.includes(p),
-        );
-
-        if (!allGuessed) {
-          // Just update the guesser's score and return
-          tx.update(gameRef, { scores: scoresObj });
-          return;
-        }
-
-        // All players guessed: compute scoring and advance round immediately
-        // Award points to the drawer
-        const drawerPointsPerGuesser = 5 + Math.floor(remainingSeconds / 2);
-
-        const numGuessers = nonDrawerPlayers.filter((u) =>
-          guessedArr.includes(u),
-        ).length;
-        if (currentDrawer) {
-          scoresObj[currentDrawer] =
-            (scoresObj[currentDrawer] || 0) +
-            drawerPointsPerGuesser * numGuessers;
-        }
-
-        // Determine next drawer. Only advance the round when the drawer
-        // cycles back to the beginning of the players list (wraps around).
-        let nextDrawer = currentDrawer;
-        let shouldIncrementRound = false;
-        if (players.length > 0) {
-          const foundIdx = players.findIndex((p) => p === currentDrawer);
-          const idx = foundIdx >= 0 ? foundIdx : 0;
-          const nextIdx = (idx + 1) % players.length;
-          nextDrawer = players[nextIdx];
-          // If nextIdx wrapped to a lower or equal index, we've completed a cycle
-          // through all players and should increment the round.
-          if (nextIdx <= idx) shouldIncrementRound = true;
-        }
-
-        const nextRound = (data.round || 1) + (shouldIncrementRound ? 1 : 0);
-        const maxRounds = data.maxRounds || TOTAL_ROUNDS_FALLBACK;
-
-        const newStatus = nextRound > maxRounds ? "finished" : "playing";
-
-        const newRoundEnd =
-          newStatus === "playing" ? getServerTime() + 30000 : null;
-
-        // Update game doc to reflect round end and scoring
-        tx.update(gameRef, {
-          scores: scoresObj,
-          strokes: [],
-          word: "",
-          currentWord: "",
-          guessed: [],
-          round: nextRound,
-          currentDrawer: nextDrawer,
-          roundEndTimestamp: newRoundEnd,
-          status: newStatus,
-          lastUpdated: firestore.FieldValue.serverTimestamp(),
-        });
-      });
-    } catch (e) {
-      console.error("handleCorrectGuess transaction failed", e);
-    }
-  };
-
-  const handleCustomWordSubmit = async () => {
-    const w = customWord.trim().toUpperCase();
+  const handleSelectWord = (selectedWord: string) => {
+    if (!socket || !userId) return;
     playSound(require("../../assets/sounds/word.mp3"));
+    socket.emit("game:selectWord", {
+      roomId,
+      userId,
+      word: selectedWord,
+    });
+  };
 
+  const handleCustomWordSubmit = () => {
+    const w = customWord.trim().toUpperCase();
     if (!w) return;
     if (w.length < 2 || w.length > 20) {
       showToast({ message: "Word must be 2-20 characters", type: "error" });
       return;
     }
-    try {
-      const gameRef = db.collection("games").doc(id as string);
-      const roundEnd = getServerTime() + 120000;
-      await gameRef.update({
-        word: w,
-        currentWord: w,
-        roundEndTimestamp: roundEnd,
-        guessed: [],
-        lastUpdated: firestore.FieldValue.serverTimestamp(),
-      });
-    } catch (e) {
-      console.error("custom word select failed", e);
-    }
+    handleSelectWord(w);
   };
 
   if (loading || isExiting) {
@@ -1550,7 +820,6 @@ export default function GameRoom() {
 
   const isDrawer = gameData?.currentDrawer === userId;
   const hasGuessed = gameData?.guessed?.includes(userId || "");
-
   const secretWord = gameData?.word ?? "";
 
   const translateX = slideAnim.interpolate({
@@ -1559,6 +828,7 @@ export default function GameRoom() {
   });
 
   const handleExitFromPodium = () => {
+    leaveGameRoom(false);
     router.replace("/");
   };
 
@@ -1583,8 +853,8 @@ export default function GameRoom() {
                   {
                     text: "Exit",
                     style: "destructive",
-                    onPress: async () => {
-                      await leaveGameRoom(true).catch(() => {});
+                    onPress: () => {
+                      leaveGameRoom(true);
                       setIsExiting(true);
                       playSound(require("../../assets/sounds/exit.mp3"));
                       setTimeout(() => router.replace("/"), 100);
@@ -1605,13 +875,10 @@ export default function GameRoom() {
                 </Text>
               </View>
             )}
-            {/* <View style={styles.headerCenter}> */}
             <View style={styles.roomBar}>
-              <Text style={styles.roomText}>{id}</Text>
+              <Text style={styles.roomText}>{roomId}</Text>
               <TouchableOpacity
-                onPress={() => {
-                  copyRoomIdToClipboard();
-                }}
+                onPress={copyRoomIdToClipboard}
                 style={styles.copyButton}
               >
                 <Ionicons name="copy" size={16} color="#374151" />
@@ -1619,7 +886,7 @@ export default function GameRoom() {
             </View>
             <View style={styles.roundBadge}>
               <Text style={styles.roundText}>
-                {(gameData?.round - 1)?.toString() ?? 0}.
+                {((gameData?.round || 1) - 1).toString()}.
                 {calculateCurrentTurn()} /{" "}
                 {gameData?.maxRounds ?? TOTAL_ROUNDS_FALLBACK}
               </Text>
@@ -1638,8 +905,11 @@ export default function GameRoom() {
           <WaitingLobby
             visible={showLobbyVisible}
             onClose={() => setShowLobbyVisible(false)}
-            onLeave={() => router.replace("/")}
-            roomId={id as string}
+            onLeave={() => {
+              leaveGameRoom(true);
+              router.replace("/");
+            }}
+            roomId={roomId}
             players={playersList}
             hostId={gameData?.hostId}
             onStart={handleStartGame}
@@ -1656,7 +926,7 @@ export default function GameRoom() {
             <View style={styles.gameContent}>
               {/* Word selection panel for drawer before drawing */}
               {gameData?.currentDrawer === userId &&
-                !((gameData as any)?.word || (gameData as any).currentWord) && (
+                !(gameData?.word || gameData?.currentWord) && (
                   <View style={styles.wordPicker}>
                     <View style={styles.wordPickerHeader}>
                       <Text style={styles.wordPickerTitle}>
@@ -1678,25 +948,7 @@ export default function GameRoom() {
                         <TouchableOpacity
                           key={w}
                           style={styles.wordOption}
-                          onPress={async () => {
-                            try {
-                              playSound(
-                                require("../../assets/sounds/word.mp3"),
-                              );
-                              const gameRef = db
-                                .collection("games")
-                                .doc(id as string);
-                              const roundEnd = getServerTime() + 120000;
-                              await gameRef.update({
-                                word: w,
-                                currentWord: w,
-                                roundEndTimestamp: roundEnd,
-                                guessed: [],
-                              });
-                            } catch (e) {
-                              console.error("select word failed", e);
-                            }
-                          }}
+                          onPress={() => handleSelectWord(w)}
                         >
                           <Text style={styles.wordOptionText}>{w}</Text>
                         </TouchableOpacity>
@@ -1716,9 +968,7 @@ export default function GameRoom() {
                         />
                         <TouchableOpacity
                           style={styles.customSubmitBtn}
-                          onPress={() => {
-                            handleCustomWordSubmit();
-                          }}
+                          onPress={handleCustomWordSubmit}
                         >
                           <Ionicons name="checkmark" size={20} color="white" />
                         </TouchableOpacity>
@@ -1726,6 +976,7 @@ export default function GameRoom() {
                     </View>
                   </View>
                 )}
+
               {/* Word Display */}
               {isDrawer && gameData?.status === "playing" && (
                 <View style={styles.wordContainer}>
@@ -1762,7 +1013,7 @@ export default function GameRoom() {
                 </View>
               )}
 
-              {/* Canvas - THIS Component receives 'color', 'strokeWidth', 'strokes' */}
+              {/* Canvas */}
               <View style={styles.canvasContainer}>
                 <View
                   style={{ flex: 1 }}
@@ -1779,11 +1030,13 @@ export default function GameRoom() {
                       secretWord.trim().length > 0
                     }
                     strokes={gameData?.strokes || []}
+                    liveStroke={liveStroke}
+                    onLiveStroke={handleLiveStroke}
                     onStrokeFinished={handleStrokeFinished}
                   />
                 </View>
 
-                {/* Overlay tools positioned on top of canvas so they're always visible */}
+                {/* Overlay tools positioned on top of canvas */}
                 {isDrawer && secretWord.trim().length > 0 && !isDrawing && (
                   <View style={styles.toolsOverlay} pointerEvents="box-none">
                     {showDrawingTools ? (
@@ -1798,12 +1051,11 @@ export default function GameRoom() {
                           onSelectWidth={setCurrentWidth}
                           onClear={handleClearCanvas}
                           onUndo={handleUndo}
+                          {...({ onFill: handleFillCanvas } as any)}
                         />
                         <TouchableOpacity
                           style={styles.closeToolsButton}
-                          onPress={() => {
-                            setShowDrawingTools(false);
-                          }}
+                          onPress={() => setShowDrawingTools(false)}
                         >
                           <Ionicons name="close" size={20} color="white" />
                         </TouchableOpacity>
@@ -1812,9 +1064,7 @@ export default function GameRoom() {
                       <View pointerEvents="auto">
                         <TouchableOpacity
                           style={styles.showToolsButton}
-                          onPress={() => {
-                            setShowDrawingTools(true);
-                          }}
+                          onPress={() => setShowDrawingTools(true)}
                         >
                           <Ionicons name="brush" size={28} color="white" />
                         </TouchableOpacity>
@@ -1828,15 +1078,18 @@ export default function GameRoom() {
             {/* Chat / Guesses */}
             <View style={styles.chatContainer}>
               <ChatWindow
-                gameId={id as string}
+                gameId={roomId}
                 isDrawer={isDrawer}
                 currentWord={gameData?.word || ""}
                 currentUser={{
                   uid: auth.currentUser?.uid || "anon",
-                  displayName: auth.currentUser?.displayName || "Player",
+                  displayName:
+                    playersList.find((p) => p.uid === userId)?.displayName ||
+                    auth.currentUser?.displayName ||
+                    "Player",
                 }}
-                guesses={gameData?.guesses || []}
-                onCorrectGuess={handleCorrectGuess}
+                guesses={gameData?.guessed || []}
+                initialMessages={gameData?.messages || []}
                 avoidKeyboard={!isKeyboardVisible}
               />
             </View>
@@ -1935,7 +1188,7 @@ export default function GameRoom() {
           <InviteFriendsModal
             visible={showInviteModal}
             onClose={() => setShowInviteModal(false)}
-            roomId={id as string}
+            roomId={roomId}
           />
 
           {/* Round Alert Overlay */}
@@ -2144,7 +1397,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 8,
     borderRadius: 8,
-    // marginRight: 8,
     borderWidth: 1,
     borderColor: "#333",
   },
@@ -2382,7 +1634,7 @@ const styles = StyleSheet.create({
   roundAlertText: {
     fontSize: 36,
     fontWeight: "900",
-    color: "#FBBF24", // Amber-400
+    color: "#FBBF24",
     textShadowColor: "#B91C1C",
     textShadowOffset: { width: 3, height: 3 },
     textShadowRadius: 0,
@@ -2392,6 +1644,6 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(74, 27, 0, 0.74)",
     borderRadius: 16,
     borderWidth: 4,
-    borderColor: "#F59E0B", // Amber-500
+    borderColor: "#F59E0B",
   },
 });

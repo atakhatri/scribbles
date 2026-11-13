@@ -17,10 +17,10 @@ import {
   ViewStyle,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useSocket } from "../context/SocketContext";
 import { useToast } from "../context/ToastContext";
-import { db, firestore } from "../firebaseConfig";
 
-interface ChatMessage {
+export interface ChatMessage {
   id: string;
   userId: string;
   userName: string;
@@ -43,7 +43,8 @@ interface ChatProps {
   currentWord: string;
   isDrawer: boolean;
   guesses: string[];
-  onCorrectGuess: (userId: string) => Promise<void>;
+  initialMessages?: ChatMessage[];
+  onCorrectGuess?: (userId: string) => Promise<void> | void;
   avoidKeyboard?: boolean;
 }
 
@@ -105,37 +106,18 @@ const FadingMessage = ({
   );
 };
 
-const getLevenshteinDistance = (a: string, b: string) => {
-  const matrix: number[][] = [];
-  for (let i = 0; i <= b.length; i++) matrix[i] = [i];
-  for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
-  for (let i = 1; i <= b.length; i++) {
-    for (let j = 1; j <= a.length; j++) {
-      if (b.charAt(i - 1) === a.charAt(j - 1)) {
-        matrix[i][j] = matrix[i - 1][j - 1];
-      } else {
-        matrix[i][j] = Math.min(
-          matrix[i - 1][j - 1] + 1,
-          Math.min(matrix[i][j - 1] + 1, matrix[i - 1][j] + 1),
-        );
-      }
-    }
-  }
-  return matrix[b.length][a.length];
-};
-
 export default function ChatWindow({
   gameId,
   currentUser,
-  currentWord,
   isDrawer,
-  guesses,
+  initialMessages = [],
   onCorrectGuess,
   avoidKeyboard = true,
 }: ChatProps) {
   const { playSound } = useToast();
+  const { socket } = useSocket();
   const insets = useSafeAreaInsets();
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [inputText, setInputText] = useState("");
   const [historyVisible, setHistoryVisible] = useState(false);
   const flatListRef = useRef<FlatList<ChatMessage>>(null);
@@ -147,53 +129,57 @@ export default function ChatWindow({
   );
 
   const currentUserRef = useRef(currentUser);
-  const isInitialLoad = useRef(true);
 
   useEffect(() => {
     currentUserRef.current = currentUser;
   }, [currentUser]);
 
+  // Sync initial messages if room state provides them on join
   useEffect(() => {
-    if (!gameId) return;
+    if (
+      initialMessages &&
+      initialMessages.length > 0 &&
+      messages.length === 0
+    ) {
+      setMessages(initialMessages);
+    }
+  }, [initialMessages]);
 
-    isInitialLoad.current = true;
-    const messagesRef = db
-      .collection("games")
-      .doc(gameId)
-      .collection("messages");
+  // Listen to real-time WebSocket chat & guess messages
+  useEffect(() => {
+    if (!socket || !gameId) return;
 
-    const unsubscribe = messagesRef
-      .orderBy("timestamp", "asc")
-      .onSnapshot((snapshot) => {
-        if (isInitialLoad.current) {
-          isInitialLoad.current = false;
-        } else {
-          snapshot.docChanges().forEach((change) => {
-            if (change.type === "added") {
-              const data = change.doc.data();
-              if (
-                data.isCorrectGuess &&
-                data.userId !== currentUserRef.current?.uid
-              ) {
-                playSound(require("../assets/sounds/correct2.mp3"));
-              }
-            }
-          });
-        }
-
-        const msgs: ChatMessage[] = [];
-        snapshot.forEach((doc) => {
-          msgs.push({ id: doc.id, ...doc.data() } as ChatMessage);
-        });
-        setMessages(msgs);
-        setTimeout(
-          () => flatListRef.current?.scrollToEnd({ animated: true }),
-          100,
-        );
+    const handleNewMessage = (msg: ChatMessage) => {
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === msg.id)) return prev;
+        return [...prev, msg];
       });
 
-    return () => unsubscribe();
-  }, [gameId]);
+      const myUid = currentUserRef.current?.uid;
+
+      if (msg.isCorrectGuess) {
+        if (msg.userId === myUid) {
+          playSound(require("../assets/sounds/correct.mp3"));
+          onCorrectGuess?.(msg.userId);
+        } else {
+          playSound(require("../assets/sounds/correct2.mp3"));
+        }
+      } else if (msg.isCloseGuess && msg.userId === myUid) {
+        playSound(require("../assets/sounds/soClose.mp3"));
+      }
+
+      setTimeout(
+        () => flatListRef.current?.scrollToEnd({ animated: true }),
+        100,
+      );
+    };
+
+    socket.on("chat:message", handleNewMessage);
+
+    return () => {
+      socket.off("chat:message", handleNewMessage);
+    };
+  }, [socket, gameId, playSound, onCorrectGuess]);
 
   // Scroll to bottom when keyboard opens to keep latest messages visible
   useEffect(() => {
@@ -203,69 +189,18 @@ export default function ChatWindow({
     return () => kbdShow.remove();
   }, []);
 
-  const handleSend = async () => {
-    if (!inputText.trim() || !currentUser) return;
+  const handleSend = () => {
+    if (!inputText.trim() || !currentUser || !socket) return;
 
     const text = inputText.trim();
-    const isGuess = text.toLowerCase() === currentWord.toLowerCase();
-    const alreadyGuessed = guesses.includes(currentUser.uid);
-
-    const dist = getLevenshteinDistance(
-      text.toLowerCase(),
-      currentWord.toLowerCase(),
-    );
-    const isClose =
-      dist > 0 &&
-      ((currentWord.length <= 5 && dist === 1) ||
-        (currentWord.length > 5 && dist <= 2));
-
-    // If it's a correct guess
-    if (isGuess && !isDrawer) {
-      if (alreadyGuessed) {
-        setInputText("");
-        return;
-      }
-      // Don't show the word in chat, show a system message or specific style
-      await db
-        .collection("games")
-        .doc(gameId)
-        .collection("messages")
-        .add({
-          userId: currentUser.uid,
-          userName: currentUser.displayName || "Player",
-          text: "Correctly guessed the word!",
-          isCorrectGuess: true,
-          timestamp: firestore.FieldValue.serverTimestamp(),
-        });
-
-      await onCorrectGuess(currentUser.uid);
-    } else if (isClose && !isDrawer && !alreadyGuessed) {
-      // Close guess - send system message but don't reveal text
-      await db
-        .collection("games")
-        .doc(gameId)
-        .collection("messages")
-        .add({
-          userId: currentUser.uid,
-          userName: currentUser.displayName || "Player",
-          text: `${currentUser.displayName || "Player"} is close!`,
-          isCloseGuess: true,
-          timestamp: firestore.FieldValue.serverTimestamp(),
-        });
-    } else {
-      // Normal message
-      await db
-        .collection("games")
-        .doc(gameId)
-        .collection("messages")
-        .add({
-          userId: currentUser.uid,
-          userName: currentUser.displayName || "Player",
-          text: text,
-          isCorrectGuess: false,
-          timestamp: firestore.FieldValue.serverTimestamp(),
-        });
-    }
+    socket.emit("chat:send", {
+      roomId: gameId,
+      user: {
+        uid: currentUser.uid,
+        displayName: currentUser.displayName || "Player",
+      },
+      text,
+    });
 
     setInputText("");
   };
@@ -277,7 +212,6 @@ export default function ChatWindow({
     const systemType = (item as any).systemType;
     const text = (item.text || "").toString();
 
-    // In case messages were written without the boolean flags, infer from text
     const inferredIsCorrect = isCorrect || /correctly guessed/i.test(text);
     const inferredIsClose = isClose || /is close/i.test(text);
 
@@ -292,7 +226,7 @@ export default function ChatWindow({
         styles.correctText,
       ] as StyleProp<TextStyle>;
       nameStyle = [styles.userName, styles.correctText] as StyleProp<TextStyle>;
-    } else if (isClose) {
+    } else if (inferredIsClose) {
       rowStyle = [styles.messageRow, styles.closeRow] as StyleProp<ViewStyle>;
       textStyle = [
         styles.messageText,
@@ -393,7 +327,6 @@ export default function ChatWindow({
           onSubmitEditing={handleSend}
         />
         <TouchableOpacity onPress={handleSend} style={styles.sendButton as any}>
-          {/* <Text style={styles.sendText}>Send</Text> */}
           <Text style={styles.sendText as any}>➤</Text>
         </TouchableOpacity>
       </View>
@@ -498,7 +431,7 @@ const styles = StyleSheet.create({
     color: "#333",
   },
   correctRow: {
-    backgroundColor: "#dcfce7", // Light green bg for correct guesses
+    backgroundColor: "#dcfce7",
     padding: 4,
     borderRadius: 4,
   },
@@ -507,7 +440,7 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
   },
   closeRow: {
-    backgroundColor: "#fef9c3", // Light yellow
+    backgroundColor: "#fef9c3",
     padding: 4,
     borderRadius: 4,
   },
@@ -516,7 +449,7 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
   },
   systemRow: {
-    backgroundColor: "#f3f4f6", // Light gray
+    backgroundColor: "#f3f4f6",
     padding: 4,
     borderRadius: 4,
   },
@@ -526,7 +459,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
   joinRow: {
-    backgroundColor: "#DBEAFE", // Light blue
+    backgroundColor: "#DBEAFE",
     padding: 4,
     borderRadius: 4,
   },
@@ -535,7 +468,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   leaveRow: {
-    backgroundColor: "#FEE2E2", // Light red
+    backgroundColor: "#FEE2E2",
     padding: 4,
     borderRadius: 4,
   },
@@ -582,7 +515,6 @@ const styles = StyleSheet.create({
     borderRadius: 33,
     borderWidth: 1,
     borderColor: "#101010",
-
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.2,

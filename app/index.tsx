@@ -34,6 +34,7 @@ import AnimatedBackground from "../components/AnimatedBG";
 import HomeCanvas from "../components/HomeCanvas";
 import GameInviteModal from "../components/gameInvite";
 import Preloader from "../components/preloader";
+import { useSocket } from "../context/SocketContext";
 import { useToast } from "../context/ToastContext";
 import WELCOME_TEXT from "../data/welcomePhrases";
 import { auth, db, firestore } from "../firebaseConfig";
@@ -90,6 +91,7 @@ export default function Index() {
   const pathname = usePathname();
   const insets = useSafeAreaInsets();
   const { showToast, showAlert, playSound } = useToast();
+  const { socket, isConnected } = useSocket();
   const [user, setUser] = useState<FirebaseAuthTypes.User | null>(null);
   const [loading, setLoading] = useState(true);
   const [splashAnimationFinished, setSplashAnimationFinished] = useState(false);
@@ -249,59 +251,6 @@ export default function Index() {
     };
   }, [insets.top, insets.bottom]);
 
-  const cleanupUserFromOpenGames = async (uid: string) => {
-    try {
-      const gamesSnap = await db
-        .collection("games")
-        .where("players", "array-contains", uid)
-        .get();
-
-      for (const gameDoc of gamesSnap.docs) {
-        const data = gameDoc.data() as any;
-        const players = Array.isArray(data.players) ? data.players : [];
-        const updatedPlayers = players.filter((p: any) => {
-          const pid = typeof p === "string" ? p : p?.uid;
-          return pid !== uid;
-        });
-
-        if (updatedPlayers.length === players.length) continue;
-
-        if (updatedPlayers.length === 0) {
-          await gameDoc.ref.delete();
-          continue;
-        }
-
-        const updates: any = { players: updatedPlayers };
-
-        if (data.hostId === uid) {
-          const next = updatedPlayers[0];
-          updates.hostId = typeof next === "string" ? next : next.uid;
-        }
-
-        if (data.currentDrawer === uid && data.status === "playing") {
-          const oldIndex = players.findIndex((p: any) => {
-            const pid = typeof p === "string" ? p : p?.uid;
-            return pid === uid;
-          });
-          const nextIndex = oldIndex >= updatedPlayers.length ? 0 : oldIndex;
-          const next = updatedPlayers[nextIndex];
-          const nextUid = typeof next === "string" ? next : next.uid;
-
-          updates.currentDrawer = nextUid;
-          updates.word = "";
-          updates.currentWord = "";
-          updates.strokes = [];
-          updates.guessed = [];
-          updates.roundEndTimestamp = Date.now() + 30000;
-        }
-
-        await gameDoc.ref.update(updates);
-      }
-    } catch (e) {
-      console.error("Failed to cleanup stale player from open games", e);
-    }
-  };
-
   useEffect(() => {
     setGreetingTemplate(
       WELCOME_PHRASES[Math.floor(Math.random() * WELCOME_PHRASES.length)],
@@ -400,10 +349,6 @@ export default function Index() {
 
       if (currentUser) {
         try {
-          // Safety net: when app is reopened on home after force-close,
-          // ensure this user is removed from any lingering active games.
-          await cleanupUserFromOpenGames(currentUser.uid);
-
           // Use robust getUserCollection utility
           const userCollection = await getUserCollection(currentUser.uid);
           const docRef = db.collection(userCollection).doc(currentUser.uid);
@@ -499,60 +444,56 @@ export default function Index() {
     };
   }, [user, pathname]);
 
-  // Listen to active game (Waiting Group)
+  // Listen to active game (Waiting Group) via WebSockets.
   useEffect(() => {
-    if (!activeGameId) return;
-    const unsub = db
-      .collection("games")
-      .doc(activeGameId)
-      .onSnapshot(async (docSnap) => {
-        if (docSnap.exists) {
-          const data = docSnap.data();
-          setActiveGameHostId((data as any).hostId || null);
+    if (!activeGameId || !socket) return;
 
-          // Auto-navigate when host enters lobby, or when game starts.
-          if (
-            ((data as any).lobbyEnteredAt || data.status === "playing") &&
-            pathname === "/"
-          ) {
-            router.push(`/game/${activeGameId}`);
-            setActiveGameId(null);
-            return;
-          }
+    const handleRoomState = (data: any) => {
+      if (!data || data.id !== activeGameId) return;
 
-          // Update players list for waiting lobby
-          if (data.players && Array.isArray(data.players)) {
-            const pIds = data.players
-              .map((p: any) => (typeof p === "string" ? p : p.uid))
-              .filter(Boolean);
+      setActiveGameHostId(data.hostId || null);
 
-            if (pIds.length === 0) {
-              setActiveGamePlayers([]);
-            } else {
-              // Use improved fetchMultipleUsers utility
-              try {
-                const pData = await fetchMultipleUsers(pIds.slice(0, 10));
-                setActiveGamePlayers(pData);
-              } catch (error) {
-                console.error("Error fetching players:", error);
-                setActiveGamePlayers([]);
-              }
-            }
-          }
+      if (
+        (data.lobbyEnteredAt || data.status === "playing") &&
+        pathname === "/"
+      ) {
+        router.push(`/game/${activeGameId}`);
+        setActiveGameId(null);
+        return;
+      }
 
-          // Sync rounds from game to local state
-          if (data.maxRounds) setSelectedRounds(data.maxRounds);
-        } else {
-          // Lobby was removed (e.g. host deleted room) -> kick everyone out of waiting state.
-          setActiveGameId(null);
-          setActiveGamePlayers([]);
-          setShowLobby(false);
-          setShowJoin(true);
-          showToast({ message: "Lobby was closed by host", type: "info" });
-        }
+      if (Array.isArray(data.players)) {
+        setActiveGamePlayers(
+          data.players.map((p: any) => ({
+            id: p.uid,
+            username: p.displayName || "Player",
+            avatarGradientIndex: p.avatarGradientIndex,
+          })),
+        );
+      }
+
+      if (data.maxRounds) setSelectedRounds(data.maxRounds);
+    };
+
+    const handleRoomClosed = (payload?: { reason?: string }) => {
+      setActiveGameId(null);
+      setActiveGamePlayers([]);
+      setShowLobby(false);
+      setShowJoin(true);
+      showToast({
+        message: payload?.reason || "Lobby was closed by host",
+        type: "info",
       });
-    return () => unsub();
-  }, [activeGameId, pathname, showToast]);
+    };
+
+    socket.on("room:state", handleRoomState);
+    socket.on("room:closed", handleRoomClosed);
+
+    return () => {
+      socket.off("room:state", handleRoomState);
+      socket.off("room:closed", handleRoomClosed);
+    };
+  }, [activeGameId, socket, pathname, router, showToast]);
 
   const fetchTopFriends = async (allFriendIds: string[]) => {
     if (allFriendIds.length === 0) {
@@ -587,27 +528,57 @@ export default function Index() {
       const userCollection = await getUserCollection(user.uid);
       const userRef = db.collection(userCollection).doc(user.uid);
 
-      // Verify document exists
       const userDoc = await userRef.get();
-      if (!userDoc.exists) {
-        showToast({ message: "User profile not found", type: "error" });
-        setGameInvite(null);
+      if (userDoc.exists) {
+        await userRef.update({
+          gameInvites: firestore.FieldValue.arrayRemove(gameInvite),
+        });
+      }
+
+      if (!socket || !isConnected) {
+        showToast({ message: "Not connected to game server", type: "error" });
         return;
       }
 
-      await userRef.update({
-        gameInvites: firestore.FieldValue.arrayRemove(gameInvite),
-      });
-
-      const gameRef = db.collection("games").doc(gameInvite.roomId);
-      await gameRef.update({
-        players: firestore.FieldValue.arrayUnion(user.uid),
-        [`scores.${user.uid}`]: 0,
-        lastUpdated: firestore.FieldValue.serverTimestamp(),
-      });
-
+      const targetRoomId = gameInvite.roomId;
       setGameInvite(null);
-      setActiveGameId(gameInvite.roomId);
+
+      socket.emit(
+        "room:join",
+        {
+          roomId: targetRoomId,
+          user: {
+            uid: user.uid,
+            displayName: username || user.displayName || "Player",
+            avatarGradientIndex:
+              avatarGradientIndex >= 0 ? avatarGradientIndex : undefined,
+          },
+        },
+        (res: { ok: boolean; state?: any; error?: string }) => {
+          if (!res?.ok || !res.state) {
+            showToast({
+              message: res?.error || "Game room no longer exists",
+              type: "error",
+            });
+            return;
+          }
+
+          if (res.state.lobbyEnteredAt || res.state.status === "playing") {
+            router.push(`/game/${targetRoomId}`);
+          } else {
+            setActiveGameHostId(res.state.hostId);
+            setActiveGamePlayers(
+              (res.state.players || []).map((p: any) => ({
+                id: p.uid,
+                username: p.displayName || "Player",
+                avatarGradientIndex: p.avatarGradientIndex,
+              })),
+            );
+            if (res.state.maxRounds) setSelectedRounds(res.state.maxRounds);
+            setActiveGameId(targetRoomId);
+          }
+        },
+      );
     } catch (error) {
       console.error("Error accepting invite:", error);
       showToast({ message: "Failed to join game", type: "error" });
@@ -661,27 +632,52 @@ export default function Index() {
         return;
       }
 
+      if (!socket || !isConnected) {
+        showToast({ message: "Connecting to game server...", type: "info" });
+        return;
+      }
+
       let gameId = activeGameId;
       if (!gameId) {
-        gameId = Math.random().toString(36).substring(2, 6).toUpperCase();
-        await db
-          .collection("games")
-          .doc(gameId)
-          .set({
-            status: "waiting",
-            lobbyEnteredAt: null,
-            currentDrawer: user.uid,
-            currentWord: "",
-            round: 1,
-            maxRounds: selectedRounds,
-            scores: { [user.uid]: 0 },
-            players: [user.uid],
-            hostId: user.uid,
-            guesses: [],
-            createdAt: Date.now(),
-            lastUpdated: firestore.FieldValue.serverTimestamp(),
-          });
-        setActiveGameId(gameId);
+        gameId = await new Promise<string | null>((resolve) => {
+          socket.emit(
+            "room:create",
+            {
+              user: {
+                uid: user.uid,
+                displayName: username || user.displayName || "Player",
+                avatarGradientIndex:
+                  avatarGradientIndex >= 0 ? avatarGradientIndex : undefined,
+              },
+              maxRounds: selectedRounds,
+              enterImmediately: false,
+            },
+            (res: { ok: boolean; roomId?: string }) => {
+              if (res?.ok && res.roomId) {
+                setActiveGameHostId(user.uid);
+                setActiveGamePlayers([
+                  {
+                    id: user.uid,
+                    username: username || user.displayName || "Player",
+                    avatarGradientIndex:
+                      avatarGradientIndex >= 0
+                        ? avatarGradientIndex
+                        : undefined,
+                  },
+                ]);
+                setActiveGameId(res.roomId);
+                resolve(res.roomId);
+              } else {
+                resolve(null);
+              }
+            },
+          );
+        });
+      }
+
+      if (!gameId) {
+        showToast({ message: "Failed to create lobby", type: "error" });
+        return;
       }
 
       // Use robust getUserCollection
@@ -729,15 +725,14 @@ export default function Index() {
         {
           text: "Delete Room",
           style: "destructive",
-          onPress: async () => {
+          onPress: () => {
             playSound(require("../assets/sounds/decline.mp3"));
-            try {
-              await db.collection("games").doc(activeGameId).delete();
-              setActiveGameId(null);
-              setActiveGamePlayers([]);
-            } catch (e) {
-              showToast({ message: "Could not delete room", type: "error" });
-            }
+            socket?.emit("room:cancel", {
+              roomId: activeGameId,
+              userId: user.uid,
+            });
+            setActiveGameId(null);
+            setActiveGamePlayers([]);
           },
         },
       ],
@@ -761,25 +756,17 @@ export default function Index() {
         {
           text: "Leave",
           style: "destructive",
-          onPress: async () => {
+          onPress: () => {
             playSound(require("../assets/sounds/decline.mp3"));
-            try {
-              await db
-                .collection("games")
-                .doc(activeGameId)
-                .update({
-                  players: firestore.FieldValue.arrayRemove(user.uid),
-                  [`scores.${user.uid}`]: firestore.FieldValue.delete(),
-                  lastUpdated: firestore.FieldValue.serverTimestamp(),
-                });
-            } catch {
-              // Ignore if room is already deleted.
-            } finally {
-              setActiveGameId(null);
-              setActiveGamePlayers([]);
-              setShowLobby(false);
-              setShowJoin(true);
-            }
+            socket?.emit("room:leave", {
+              roomId: activeGameId,
+              userId: user.uid,
+              withMessage: true,
+            });
+            setActiveGameId(null);
+            setActiveGamePlayers([]);
+            setShowLobby(false);
+            setShowJoin(true);
           },
         },
       ],
@@ -793,28 +780,22 @@ export default function Index() {
       return;
     }
 
-    try {
-      await db.collection("games").doc(activeGameId).update({
-        lobbyEnteredAt: Date.now(),
-        lastUpdated: firestore.FieldValue.serverTimestamp(),
-      });
-    } catch (e) {
-      console.error("Failed to enter lobby for all", e);
-      showToast({ message: "Could not enter game", type: "error" });
-    }
+    socket?.emit("room:enterLobbyForAll", {
+      roomId: activeGameId,
+      userId: user.uid,
+    });
   };
 
   const updateLobbyRounds = async (delta: number) => {
     playSound(require("../assets/sounds/click.mp3"));
-    if (!activeGameId) return;
+    if (!activeGameId || !user) return;
     const newRounds = Math.max(1, Math.min(20, selectedRounds + delta));
-    try {
-      await db.collection("games").doc(activeGameId).update({
-        maxRounds: newRounds,
-      });
-    } catch (e) {
-      console.error("Failed to update rounds", e);
-    }
+    setSelectedRounds(newRounds);
+    socket?.emit("room:updateRounds", {
+      roomId: activeGameId,
+      userId: user.uid,
+      maxRounds: newRounds,
+    });
   };
 
   // Draggable FAB Logic
@@ -973,32 +954,39 @@ export default function Index() {
       roundsToPlay = parsed;
     }
 
-    const randomCode = Math.random().toString(36).substring(2, 6).toUpperCase();
-
-    try {
-      if (!user) return;
-
-      await db
-        .collection("games")
-        .doc(randomCode)
-        .set({
-          status: "waiting",
-          lobbyEnteredAt: null,
-          currentDrawer: user.uid,
-          currentWord: "",
-          round: 1,
-          maxRounds: roundsToPlay,
-          scores: { [user.uid]: 0 },
-          players: [user.uid],
-          hostId: user.uid,
-          guesses: [],
-          lastUpdated: firestore.FieldValue.serverTimestamp(),
-        });
-      router.push(`/game/${randomCode}`);
-      setCreateRoomModalVisible(false);
-    } catch (error) {
-      showToast({ message: "Failed to create game room", type: "error" });
+    if (!user) return;
+    if (!socket || !isConnected) {
+      showToast({
+        message: "Connecting to game server... Please try again.",
+        type: "error",
+      });
+      return;
     }
+
+    socket.emit(
+      "room:create",
+      {
+        user: {
+          uid: user.uid,
+          displayName: username || user.displayName || "Player",
+          avatarGradientIndex:
+            avatarGradientIndex >= 0 ? avatarGradientIndex : undefined,
+        },
+        maxRounds: roundsToPlay,
+        enterImmediately: true,
+      },
+      (res: { ok: boolean; roomId?: string; error?: string }) => {
+        if (res?.ok && res.roomId) {
+          setCreateRoomModalVisible(false);
+          router.push(`/game/${res.roomId}`);
+        } else {
+          showToast({
+            message: res?.error || "Failed to create game room",
+            type: "error",
+          });
+        }
+      },
+    );
   };
 
   const joinRoom = async () => {
@@ -1012,24 +1000,27 @@ export default function Index() {
       return;
     }
 
-    try {
-      // Check if room exists in Firestore
-      const roomRef = db.collection("games").doc(roomCode.toUpperCase());
-      const roomSnap = await roomRef.get();
-
-      if (!roomSnap.exists) {
-        showToast({ message: "Room not found", type: "error" });
-        return;
-      }
-
-      router.push(`/game/${roomCode.toUpperCase()}`);
-    } catch (error) {
-      console.error("Error checking room:", error);
+    if (!socket || !isConnected) {
       showToast({
-        message: "Failed to check room. Please try again.",
+        message: "Connecting to game server... Please try again.",
         type: "error",
       });
+      return;
     }
+
+    const code = roomCode.trim().toUpperCase();
+    socket.emit(
+      "room:check",
+      { roomId: code },
+      (res: { exists: boolean }) => {
+        if (!res?.exists) {
+          showToast({ message: "Room not found", type: "error" });
+          return;
+        }
+
+        router.push(`/game/${code}`);
+      },
+    );
   };
 
   const handleGuestLogin = async () => {
